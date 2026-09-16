@@ -1,0 +1,6 @@
+use "bytes -> volcan/0.1.0" from "volcan"
+
+fn main() is
+    let comp = volcan::compositor("/dev/dri/card0", "pl", false, true)
+    volcan::run(comp)
+end
