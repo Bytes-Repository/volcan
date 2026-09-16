@@ -1,0 +1,43 @@
+extern static [c, "drm"] is
+    fn drmOpen(name: string, busid: int) -> int
+    fn drmClose(fd: int) -> int
+
+    ;; ── tryb "legacy" (prostszy, dobry punkt startowy) ──
+    fn drmModeGetResources(fd: int) -> int
+    fn drmModeFreeResources(res: int)
+    fn drmModeGetConnector(fd: int, connector_id: int) -> int
+    fn drmModeFreeConnector(conn: int)
+    fn drmModeGetEncoder(fd: int, encoder_id: int) -> int
+    fn drmModeFreeEncoder(enc: int)
+    fn drmModeGetCrtc(fd: int, crtc_id: int) -> int
+    fn drmModeFreeCrtc(crtc: int)
+    fn drmModeSetCrtc(fd: int, crtc_id: int, fb_id: int, x: int, y: int, connectors: int, count: int, mode: int) -> int
+
+    ;; ── framebuffery (bufor GBM -> fb_id widoczny dla KMS) ──
+    fn drmModeAddFB2(fd: int, width: int, height: int, pixel_format: int, handles: int, pitches: int, offsets: int, fb_id: int, flags: int) -> int
+    fn drmModeRmFB(fd: int, fb_id: int) -> int
+    fn drmModePageFlip(fd: int, crtc_id: int, fb_id: int, flags: int, user_data: int) -> int
+
+    ;; ── tryb atomowy (produkcyjny, jedna transakcja na cały KMS state) ──
+    fn drmModeAtomicAlloc() -> int
+    fn drmModeAtomicFree(req: int)
+    fn drmModeAtomicAddProperty(req: int, obj_id: int, prop_id: int, value: int) -> int
+    fn drmModeAtomicCommit(fd: int, req: int, flags: int, user_data: int) -> int
+    fn drmSetClientCap(fd: int, capability: int, value: int) -> int
+
+    ;; ── plane'y (overlay/cursor/kursor sprzętowy) ──
+    fn drmModeGetPlaneResources(fd: int) -> int
+    fn drmModeGetPlane(fd: int, plane_id: int) -> int
+    fn drmModeFreePlane(plane: int)
+
+    ;; ── VBlank / uprawnienia sesji (master/droppable dla VT-switch) ──
+    fn drmHandleEvent(fd: int, evctx: int) -> int
+    fn drmDropMaster(fd: int) -> int
+    fn drmSetMaster(fd: int) -> int
+end
+
+;; Stałe capability z drm_mode.h
+pub const DRM_CLIENT_CAP_ATOMIC:            int = 4
+pub const DRM_CLIENT_CAP_UNIVERSAL_PLANES:  int = 2
+pub const DRM_MODE_ATOMIC_ALLOW_MODESET:    int = 0x0400
+pub const DRM_MODE_PAGE_FLIP_EVENT:         int = 0x01
