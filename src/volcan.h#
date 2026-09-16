@@ -1,0 +1,219 @@
+mod ffi
+mod protocols
+mod backend
+mod renderer
+mod display
+mod client
+mod dispatcher
+mod cs
+mod output
+mod surface
+mod seat
+mod wm
+mod layer_shell_logic
+mod xwl
+
+;; Publiczne API + PĘTLA GŁÓWNA. Ponieważ H# nie potrafi
+;; wyeksportować funkcji jako wskaźnik na funkcję C (patrz
+;; ffi/socket.h#), volcan nie rejestruje ŻADNYCH callbacków w żadnej
+;; bibliotece C — zamiast tego cała pętla to jedno wywołanie `poll()`
+;; na wszystkich deskryptorach naraz (gniazdo nasłuchujące, każdy
+;; podłączony klient, DRM, libinput, udev, XWayland), a potem seria
+;; zwykłych wywołań H#->C sprawdzających, co jest gotowe. To jest
+;; DOKŁADNIE ten sam model, na którym stoi cały ten język zanim
+;; ktokolwiek wymyślił callbacki — i jest w pełni wystarczający dla
+;; kompozytora Wayland, bo wszystko, co go interesuje, i tak przychodzi
+;; przez deskryptory plików.
+
+use "std -> log" from "log"
+
+struct Compositor is
+    pub disp:      display::VolcanDisplay
+    pub state:     cs::VolcanState
+    pub drm:       drmb::DrmBackend
+    pub input:     inputb::InputBackend
+    pub udev_mon:  udevmon::UdevMonitor
+    pub xwayland:  xwl::XWaylandBridge
+    pub use_xwayland: bool
+end
+
+;; Buduje kompozytor gotowy do `run()`.
+pub fn compositor(card_path: string, layout: string, focus_follows_mouse: bool, enable_xwayland: bool) -> Compositor is
+    let drm: drmb::DrmBackend = drmb::init(card_path)
+    let input: inputb::InputBackend = inputb::init("seat0", layout, focus_follows_mouse)
+    let udev_mon: udevmon::UdevMonitor = udevmon::init()
+    let disp: display::VolcanDisplay = display::create()
+    let mut state: cs::VolcanState = cs::new_state(disp.listen_fd)
+    state.outputs = output::layout_outputs(drmb::scan_outputs(drm.primary))
+
+    let mut xwl_bridge: xwl::XWaylandBridge = xwl::XWaylandBridge { display_num: 0, pid: 0, xcb_conn: 0, wm_window: 0, wm_fd: -1 }
+    if enable_xwayland is
+        xwl_bridge = xwl::spawn(0)
+    end
+
+    return Compositor {
+        disp: disp, state: state, drm: drm, input: input, udev_mon: udev_mon,
+        xwayland: xwl_bridge, use_xwayland: enable_xwayland,
+    }
+end
+
+;; ── budowanie tablicy `struct pollfd[]` ────────────────────────────────
+;; { int fd; short events; short revents; } — 8 bajtów, patrz ffi/socket.h#.
+;; (Budowane inline w `run()` poniżej dla każdej iteracji pętli, bo
+;; lista fd zmienia się z każdym podłączonym/odłączonym klientem.)
+
+fn read_all(addr: int, n: int) -> [int] is
+    return __builtin_bytes_to_ints(wire::peek_bytes(addr, n))
+end
+
+fn revents_ready(polled: bytes, index: int) -> bool is
+    let ints: [int] = __builtin_bytes_to_ints(polled)
+    let base: int = index * 8 + 6 ;; offset revents (short, 2 bajty) w slocie
+    if base + 1 >= ints.len() is
+        return false
+    end
+    return (ints[base] & POLLIN) != 0
+end
+
+;; Pętla główna: zbuduj listę fd -> `poll()` -> obsłuż to, co gotowe ->
+;; wyrenderuj klatkę -> powtórz. Jeden wątek, żadnych callbacków.
+pub fn run(comp: Compositor) is
+    log::info("volcan: kompozytor wystartował na $WAYLAND_DISPLAY=" + comp.disp.socket_name)
+    let mut c: Compositor = comp
+
+    while c.state.running is
+        let mut fds: [int] = [c.disp.listen_fd, c.input.fd, c.udev_mon.fd, c.drm.primary.fd]
+        if c.use_xwayland is
+            fds.push(c.xwayland.wm_fd)
+        end
+        let base_count: int = fds.len()
+        let mut i: int = 0
+        while i < c.state.clients.len() is
+            fds.push(c.state.clients[i].fd)
+            i += 1
+        end
+
+        let table: int = calloc(fds.len(), POLLFD_SIZE)
+        let mut j: int = 0
+        while j < fds.len() is
+            wire::poke(table + (j * 8), 0, wire::enc_u32(fds[j]))
+            wire::poke(table + (j * 8), 4, wire::enc_u32(POLLIN))
+            j += 1
+        end
+        let poll_buf: bytes = __builtin_bytes_from_ints(read_all(table, fds.len() * 8))
+        ;; Zakłada, że `bytes` przekazywane do `extern static` jest
+        ;; współdzielonym buforem (ten sam adres widoczny po stronie C),
+        ;; więc `poll()` może nadpisać `revents` w miejscu, a
+        ;; `revents_ready` odczyta już zaktualizowaną wartość z tego
+        ;; samego `poll_buf` — to samo założenie co przy `memmove`
+        ;; w protocols/wire.h#'s `peek_bytes`; oba miejsca do
+        ;; zweryfikowania przy pierwszym realnym `bytes build`.
+        poll(poll_buf, fds.len(), 16) ;; timeout 16ms ≈ 60Hz gdy nic się nie dzieje
+
+        ;; ── nowy klient? ──
+        if revents_ready(poll_buf, 0) is
+            let client_fd: int = display::accept_client(c.disp)
+            if client_fd >= 0 is
+                let mut clients: [client::Client] = c.state.clients
+                clients.push(client::new_client(client_fd))
+                c.state.clients = clients
+                log::info("volcan: nowy klient połączony (fd=" + to_string(client_fd) + ")")
+            end
+        end
+
+        ;; ── wejście ──
+        if revents_ready(poll_buf, 1) is
+            c.state = inputb::dispatch(c.input, c.state)
+        end
+
+        ;; ── hot-plug GPU/monitorów ──
+        if revents_ready(poll_buf, 2) is
+            let ev: udevmon::UdevEvent = udevmon::poll_event(c.udev_mon)
+            if ev.has_event && ev.devnode != "" is
+                if ev.action == "add" is
+                    c.drm = drmb::add_gpu(c.drm, ev.devnode)
+                end
+                if ev.action == "remove" is
+                    c.drm = drmb::remove_gpu(c.drm, ev.devnode)
+                end
+                c.state.outputs = output::layout_outputs(drmb::scan_outputs(c.drm.primary))
+            end
+        end
+
+        ;; ── vblank / gotowość do kolejnej klatki ──
+        if revents_ready(poll_buf, 3) is
+            drmb::handle_vblank_events(c.drm.primary)
+        end
+
+        ;; ── XWayland ──
+        if c.use_xwayland && revents_ready(poll_buf, 4) is
+            xwl::dispatch(c.xwayland)
+        end
+
+        ;; ── klienci Wayland: dane gotowe do odczytu ──
+        let mut k: int = 0
+        while k < c.state.clients.len() is
+            if revents_ready(poll_buf, base_count + k) is
+                let result = dispatcher::on_readable(c.state, c.state.clients[k])
+                c.state = result.0
+                let mut clients2: [client::Client] = c.state.clients
+                clients2[k] = result.1
+                c.state.clients = clients2
+            end
+            k += 1
+        end
+
+        ;; ── odepnij martwych klientów ──
+        c.state.clients = drop_dead(c.state.clients)
+
+        ;; ── renderuj każde wyjście ──
+        let mut o: int = 0
+        while o < c.state.outputs.len() is
+            let out = c.state.outputs[o]
+            gles::render_frame(c.state, out.current_mode.width, out.current_mode.height)
+            o += 1
+        end
+    end
+end
+
+fn drop_dead(clients: [client::Client]) -> [client::Client] is
+    let mut kept: [client::Client] = []
+    let mut i: int = 0
+    while i < clients.len() is
+        if clients[i].alive is
+            kept.push(clients[i])
+        else is
+            sock::close(clients[i].fd)
+        end
+        i += 1
+    end
+    return kept
+end
+
+pub fn add_output(comp: Compositor, out: output::Output) -> Compositor is
+    let mut c: Compositor = comp
+    let mut outs: [output::Output] = c.state.outputs
+    outs.push(out)
+    c.state.outputs = output::layout_outputs(outs)
+    return c
+end
+
+pub fn stop(comp: Compositor) is
+    let mut i: int = 0
+    while i < comp.state.clients.len() is
+        sock::close(comp.state.clients[i].fd)
+        i += 1
+    end
+    sock::close(comp.udev_mon.fd)
+    sock::close(comp.drm.primary.fd)
+    let mut g: int = 0
+    while g < comp.drm.gpus.len() is
+        sock::close(comp.drm.gpus[g].fd)
+        g += 1
+    end
+    display::shutdown(comp.disp)
+    if comp.use_xwayland is
+        xwl::shutdown(comp.xwayland)
+    end
+    log::info("volcan: kompozytor zatrzymany, wszystkie deskryptory zamknięte")
+end
