@@ -1,0 +1,32 @@
+extern static [c] is
+    fn malloc(size: int) -> int
+    fn calloc(count: int, size: int) -> int
+    fn free(ptr: int)
+    ;; `src` jako `bytes` -> kompilator H# przekazuje surowy wskaźnik na
+    ;; bufor bajtów (tak samo jak `string` marshaluje się do char*).
+    ;; Ten binding służy do ZAPISU (H# -> pamięć C): poke().
+    fn memcpy(dest: int, src: bytes, n: int) -> int
+    ;; Ten sam efekt co memcpy, ale pod innym, realnym symbolem libc
+    ;; (`memmove` — bezpieczny też przy zachodzących na siebie zakresach)
+    ;; i z ODWROTNYM kierunkiem marshalingu: `dest: bytes` jako bufor,
+    ;; do którego C ma zapisać `n` bajtów z adresu `src`. Używany do
+    ;; ODCZYTU (pamięć C -> H#): peek() w protocols/wire.h#. Zakłada, że
+    ;; parametr typu `bytes` jest przekazywany przez wskaźnik do tego
+    ;; samego bufora (bez kopiowania z powrotem po wywołaniu) — do
+    ;; zweryfikowania przy pierwszym realnym `bytes build`; gdyby
+    ;; kompilator kopiował `bytes` przez wartość, ten jeden helper
+    ;; wymaga zamiany na wbudowaną funkcję kompilatora do odczytu pamięci.
+    fn memmove(dest: bytes, src: int, n: int) -> int
+    fn memset(dest: int, value: int, n: int) -> int
+    fn strlen(s: string) -> int
+    fn strdup(s: string) -> int
+    fn getenv(name: string) -> int
+    fn dup(fd: int) -> int
+    fn close(fd: int) -> int
+    fn pipe(fds: int) -> int
+end
+
+;; Rozmiar wskaźnika na platformie docelowej (linux/x86_64, aarch64 —
+;; obie 64-bit). Gdyby volcan miał kiedyś celować w 32-bit, to jest
+;; jedyna stała, którą trzeba przełączyć.
+pub const PTR_SIZE: int = 8
