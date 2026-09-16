@@ -1,0 +1,41 @@
+fn all_interfaces() -> [wire::WireInterface] is
+    return core_wl::all_core_interfaces() + xdg::all_xdg_interfaces() +
+           layer_shell::all_layer_shell_interfaces() + [
+               extras::linux_dmabuf_interface(), extras::linux_buffer_params_interface(),
+               extras::presentation_interface(), extras::presentation_feedback_interface(),
+               extras::viewporter_interface(), extras::viewport_interface(),
+           ]
+end
+
+pub fn find_interface(name: string) -> wire::WireInterface is
+    let all: [wire::WireInterface] = all_interfaces()
+    let mut i: int = 0
+    while i < all.len() is
+        if all[i].name == name is
+            return all[i]
+        end
+        i += 1
+    end
+    ;; Interfejs nieznany — zwróć pustą definicję; wołający (dispatcher)
+    ;; powinien to potraktować jako błąd protokołu klienta.
+    return wire::WireInterface { name: "", version: 0, requests: [], events: [] }
+end
+
+;; Sygnatura requestu o danym opcode (indeksie) dla danego interfejsu —
+;; to jest to, czego `wire_codec::try_decode` potrzebuje, żeby wiedzieć,
+;; ile bajtów/jakiego typu argumenty czytać.
+pub fn request_signature(interface_name: string, opcode: int) -> string is
+    let iface: wire::WireInterface = find_interface(interface_name)
+    if opcode < 0 || opcode >= iface.requests.len() is
+        return ""
+    end
+    return iface.requests[opcode].signature
+end
+
+pub fn request_name(interface_name: string, opcode: int) -> string is
+    let iface: wire::WireInterface = find_interface(interface_name)
+    if opcode < 0 || opcode >= iface.requests.len() is
+        return ""
+    end
+    return iface.requests[opcode].name
+end
