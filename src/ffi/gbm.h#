@@ -1,0 +1,26 @@
+extern static [c, "gbm"] is
+    fn gbm_create_device(drm_fd: int) -> int
+    fn gbm_device_destroy(gbm: int)
+
+    fn gbm_surface_create(gbm: int, width: int, height: int, format: int, flags: int) -> int
+    fn gbm_surface_destroy(surface: int)
+    fn gbm_surface_lock_front_buffer(surface: int) -> int
+    fn gbm_surface_release_buffer(surface: int, bo: int)
+    fn gbm_surface_has_free_buffers(surface: int) -> int
+
+    fn gbm_bo_get_width(bo: int)  -> int
+    fn gbm_bo_get_height(bo: int) -> int
+    fn gbm_bo_get_stride(bo: int) -> int
+    fn gbm_bo_get_handle_u32(bo: int) -> int
+    fn gbm_bo_get_fd(bo: int) -> int          ;; dmabuf fd (linux-dmabuf, zero-copy)
+
+    ;; Bufory zaimportowane od klienta (linux-dmabuf-v1 / wl_shm)
+    fn gbm_bo_import(gbm: int, bo_type: int, buffer: int, flags: int) -> int
+end
+
+;; Formaty pikseli (drm_fourcc.h) najczęściej używane w kompozytorach
+pub const GBM_FORMAT_XRGB8888: int = 0x34325258
+pub const GBM_FORMAT_ARGB8888: int = 0x34325241
+pub const GBM_BO_USE_SCANOUT:  int = 1
+pub const GBM_BO_USE_RENDERING: int = 2
+pub const GBM_BO_IMPORT_FD:    int = 5541
