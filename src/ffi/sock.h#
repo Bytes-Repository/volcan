@@ -1,0 +1,28 @@
+extern static [c] is
+    fn socket(domain: int, type_: int, protocol: int) -> int
+    fn bind(fd: int, addr: bytes, addr_len: int) -> int
+    fn listen(fd: int, backlog: int) -> int
+    fn accept(fd: int, addr: int, addr_len: int) -> int
+    fn read(fd: int, buf: bytes, count: int) -> int
+    fn raw_write(fd: int, buf: bytes, count: int) -> int
+    fn recv(fd: int, buf: bytes, len: int, flags: int) -> int
+    fn send(fd: int, buf: bytes, len: int, flags: int) -> int
+    fn fcntl(fd: int, cmd: int, arg: int) -> int
+    fn unlink(path: string) -> int
+
+    ;; poll(2) — jedno wywołanie ogarnia wszystkie fd naraz (gniazdo
+    ;; nasłuchujące, każdy podłączony klient, fd DRM, fd libinput,
+    ;; fd XWayland). To jest CAŁA "pętla zdarzeń" volcana — patrz
+    ;; volcan.h#'s `run`.
+    fn poll(fds: bytes, nfds: int, timeout_ms: int) -> int
+end
+
+;; AF_UNIX / SOCK_STREAM (sys/socket.h, przenośne na Linuksie)
+pub const AF_UNIX:     int = 1
+pub const SOCK_STREAM: int = 1
+pub const F_SETFL:     int = 4
+pub const O_NONBLOCK:  int = 2048
+
+;; struct pollfd { int fd; short events; short revents; }; sizeof = 8
+pub const POLLFD_SIZE: int = 8
+pub const POLLIN:      int = 1
