@@ -1,0 +1,31 @@
+extern static [c, "xkbcommon"] is
+    fn xkb_context_new(flags: int) -> int
+    fn xkb_context_unref(ctx: int)
+
+    fn xkb_keymap_new_from_names(ctx: int, names: int, flags: int) -> int
+    fn xkb_keymap_unref(keymap: int)
+    ;; Serializuje keymapę do tekstu (format XKB) — TEN tekst trafia do
+    ;; anonimowego pliku (memfd_create) przekazywanego klientowi przez
+    ;; `wl_keyboard.keymap` (fd + rozmiar), zgodnie z core_wl.h#.
+    fn xkb_keymap_get_as_string(keymap: int, format: int) -> int
+
+    fn xkb_state_new(keymap: int) -> int
+    fn xkb_state_unref(state: int)
+    fn xkb_state_update_key(state: int, keycode: int, direction: int) -> int
+    fn xkb_state_key_get_syms(state: int, keycode: int, syms_out: int) -> int
+    fn xkb_state_serialize_mods(state: int, component: int) -> int
+end
+
+extern static [c] is
+    ;; Anonimowy plik w pamięci — najczystszy sposób przekazania
+    ;; keymapy klientowi jako fd (bez tworzenia pliku na dysku).
+    fn memfd_create(name: string, flags: int) -> int
+    fn ftruncate(fd: int, length: int) -> int
+end
+
+pub const XKB_KEYMAP_FORMAT_TEXT_V1: int = 1
+pub const XKB_KEY_DOWN: int = 1
+pub const XKB_KEY_UP:   int = 0
+pub const XKB_STATE_MODS_DEPRESSED: int = 1
+pub const XKB_STATE_MODS_LATCHED:   int = 2
+pub const XKB_STATE_MODS_LOCKED:    int = 4
