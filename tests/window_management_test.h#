@@ -1,0 +1,55 @@
+use "std -> test" from "test"
+mod wm
+
+#[test]
+fn test_clamp_size_respects_min() is
+    let r = wm::clamp_size(100, 50, 200, 200, 0, 0)
+    assert_eq(r.w, 200)
+    assert_eq(r.h, 200)
+end
+
+#[test]
+fn test_clamp_size_respects_max() is
+    let r = wm::clamp_size(2000, 2000, 0, 0, 1024, 768)
+    assert_eq(r.w, 1024)
+    assert_eq(r.h, 768)
+end
+
+#[test]
+fn test_clamp_size_passthrough_within_bounds() is
+    let r = wm::clamp_size(640, 480, 100, 100, 1920, 1080)
+    assert_eq(r.w, 640)
+    assert_eq(r.h, 480)
+end
+
+#[test]
+fn test_popup_position_top_left_anchor_bottom_right_gravity() is
+    let mut p = wm::new_positioner()
+    p.width = 200
+    p.height = 100
+    p.anchor_rect = wm::Rect { x: 50, y: 50, w: 20, h: 20 }
+    p.anchor = wm::POS_ANCHOR_BOTTOM_RIGHT
+    p.gravity = wm::POS_ANCHOR_BOTTOM_RIGHT
+    let pos = wm::compute_popup_position(p)
+    ;; punkt zaczepienia = (70, 70) [prawy-dolny róg anchor_rect],
+    ;; grawitacja BOTTOM_RIGHT nie przesuwa x/y do tyłu (rośnie w prawo/dół)
+    assert_eq(pos.x, 70)
+    assert_eq(pos.y, 70)
+end
+
+#[test]
+fn test_configure_ack_matches_latest_serial() is
+    let c0 = wm::new_configure_state()
+    let c1 = wm::begin_configure(c0, 5, 800, 600)
+    let result = wm::ack_configure(c1, 5)
+    assert_true(result.1)
+end
+
+#[test]
+fn test_configure_ack_rejects_stale_serial() is
+    let c0 = wm::new_configure_state()
+    let c1 = wm::begin_configure(c0, 5, 800, 600)
+    let c2 = wm::begin_configure(c1, 6, 900, 700)
+    let result = wm::ack_configure(c2, 5) ;; klient potwierdza STARY serial
+    assert_false(result.1)
+end
