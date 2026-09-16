@@ -1,0 +1,118 @@
+use "std -> collections" from "col"
+use "std -> conv"        from "conv"
+
+struct VolcanState is
+    pub display:        int          ;; wl_display* (lub 0, jeśli nieużywany — patrz ffi/socket.h#)
+    pub listen_fd:       int          ;; gniazdo nasłuchujące UNIX (ffi/socket.h#)
+    pub running:        bool
+
+    pub clients:         [client::Client]
+
+    pub surfaces:        [surface::Surface]
+    pub surface_index:   any          ;; string(object_id) -> string(index w `surfaces`)
+    ;; kolejność renderowania, od najniższej do najwyższej (Z-order) —
+    ;; przechowuje object_id, nie indeks (indeksy się przesuwają).
+    pub stacking_order:  [int]
+
+    pub outputs:         [output::Output]
+
+    ;; fokus wejścia — wl_resource* powierzchni albo 0
+    pub keyboard_focus:  int
+    pub pointer_focus:   int
+    pub pointer_x:       f64
+    pub pointer_y:       f64
+
+    pub xwayland_active: bool
+    pub next_serial:     int
+end
+
+pub fn new_state(listen_fd: int) -> VolcanState is
+    return VolcanState {
+        display: 0,
+        listen_fd: listen_fd,
+        running: true,
+        clients: [],
+        surfaces: [],
+        surface_index: col::new_map(),
+        stacking_order: [],
+        outputs: [],
+        keyboard_focus: 0,
+        pointer_focus: 0,
+        pointer_x: 0.0,
+        pointer_y: 0.0,
+        xwayland_active: false,
+        next_serial: 0,
+    }
+end
+
+;; Kolejny numer "serial" (do configure/ack_configure, patrz wm.h#) —
+;; jako pole `VolcanState` zamiast mutowalnej zmiennej modułu, bo H#
+;; nie ma tych drugich (tylko `const`/immutable `let` poza funkcjami).
+pub fn next_serial(s: VolcanState) -> (VolcanState, int) is
+    let mut st: VolcanState = s
+    st.next_serial = st.next_serial + 1
+    return (st, st.next_serial)
+end
+
+pub fn get_surface(s: VolcanState, object_id: int) -> surface::Surface is
+    let key: string = conv::int_to_str(object_id)
+    if !col::hashmap_contains(s.surface_index, key) is
+        return surface::new_surface(object_id, 0)
+    end
+    let idx: int = conv::str_to_int(col::hashmap_get(s.surface_index, key))
+    return s.surfaces[idx]
+end
+
+;; Wstawia albo aktualizuje powierzchnię. Zwraca NOWY `VolcanState`
+;; (zgodnie z resztą kodu volcana — struktury są aktualizowane przez
+;; rekonstrukcję, nie mutację w miejscu, żeby uniknąć niejasności co do
+;; semantyki referencji/kopii w H#).
+pub fn put_surface(s: VolcanState, object_id: int, surf: surface::Surface) -> VolcanState is
+    let mut st: VolcanState = s
+    let key: string = conv::int_to_str(object_id)
+    if col::hashmap_contains(st.surface_index, key) is
+        let idx: int = conv::str_to_int(col::hashmap_get(st.surface_index, key))
+        let mut arr: [surface::Surface] = st.surfaces
+        arr[idx] = surf
+        st.surfaces = arr
+    else is
+        let mut arr2: [surface::Surface] = st.surfaces
+        let new_idx: int = arr2.len()
+        arr2.push(surf)
+        st.surfaces = arr2
+        col::hashmap_insert(st.surface_index, key, conv::int_to_str(new_idx))
+    end
+    return st
+end
+
+;; Przenosi powierzchnię na wierzch Z-order (albo dodaje ją tam po raz
+;; pierwszy, gdy dopiero co się zmapowała — wl_surface.commit z
+;; pierwszym bufferem).
+pub fn raise_surface(s: VolcanState, object_id: int) -> VolcanState is
+    let mut st: VolcanState = s
+    let mut order: [int] = []
+    let mut i: int = 0
+    while i < st.stacking_order.len() is
+        if st.stacking_order[i] != object_id is
+            order.push(st.stacking_order[i])
+        end
+        i += 1
+    end
+    order.push(object_id)
+    st.stacking_order = order
+    return st
+end
+
+;; Zwraca powierzchnię pod danym punktem (najwyższą w Z-order), albo 0.
+pub fn surface_at(state: VolcanState, x: f64, y: f64) -> int is
+    let mut i: int = state.stacking_order.len() - 1
+    while i >= 0 is
+        let res: int = state.stacking_order[i]
+        let s: surface::Surface = get_surface(state, res)
+        if surface::contains_point(s, x, y) is
+            return res
+        end
+        i -= 1
+    end
+    return 0
+end
