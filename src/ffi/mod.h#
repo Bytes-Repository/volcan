@@ -1,0 +1,11 @@
+mod drm
+mod gbm
+mod egl
+mod li
+mod libc
+mod sock
+mod udev
+mod ws
+mod xcb
+mod xkb
+mod libseat
