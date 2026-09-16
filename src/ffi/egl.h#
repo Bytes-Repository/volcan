@@ -1,0 +1,47 @@
+extern static [c, "EGL"] is
+    fn eglGetPlatformDisplay(platform: int, native_display: int, attrib_list: int) -> int
+    fn eglGetDisplay(native_display: int) -> int
+    fn eglInitialize(display: int, major: int, minor: int) -> int
+    fn eglBindAPI(api: int) -> int
+    fn eglChooseConfig(display: int, attrib_list: int, configs: int, config_size: int, num_config: int) -> int
+    fn eglCreateContext(display: int, config: int, share_context: int, attrib_list: int) -> int
+    fn eglCreateWindowSurface(display: int, config: int, native_window: int, attrib_list: int) -> int
+    fn eglMakeCurrent(display: int, draw: int, read: int, context: int) -> int
+    fn eglSwapBuffers(display: int, surface: int) -> int
+    fn eglSwapInterval(display: int, interval: int) -> int
+    fn eglDestroyContext(display: int, context: int) -> int
+    fn eglDestroySurface(display: int, surface: int) -> int
+    fn eglTerminate(display: int) -> int
+
+    ;; Rozszerzenia kluczowe dla kompozytora: import dmabuf klienta jako
+    ;; EGLImage bez kopiowania (EGL_EXT_image_dma_buf_import).
+    fn eglCreateImage(display: int, context: int, target: int, buffer: int, attrib_list: int) -> int
+    fn eglDestroyImage(display: int, image: int) -> int
+    fn eglQueryString(display: int, name: int) -> int
+end
+
+extern static [c, "GLESv2"] is
+    fn glGenTextures(n: int, textures: int)
+    fn glBindTexture(target: int, texture: int)
+    fn glEGLImageTargetTexture2DOES(target: int, image: int)
+    fn glClear(mask: int)
+    fn glClearColor(r: f64, g: f64, b: f64, a: f64)
+    fn glViewport(x: int, y: int, w: int, h: int)
+    fn glDrawArrays(mode: int, first: int, count: int)
+    fn glCreateShader(shader_type: int) -> int
+    fn glShaderSource(shader: int, count: int, source: int, length: int)
+    fn glCompileShader(shader: int)
+    fn glCreateProgram() -> int
+    fn glAttachShader(program: int, shader: int)
+    fn glLinkProgram(program: int)
+    fn glUseProgram(program: int)
+end
+
+pub const EGL_PLATFORM_GBM_KHR: int = 0x31D7
+pub const EGL_OPENGL_ES_API:    int = 0x30A0
+pub const EGL_NO_CONTEXT:       int = 0
+pub const GL_COLOR_BUFFER_BIT:  int = 0x4000
+pub const GL_TEXTURE_2D:        int = 0x0DE1
+pub const GL_TEXTURE_EXTERNAL_OES: int = 0x8D65
+pub const EGL_LINUX_DMA_BUF_EXT: int = 0x3270
+pub const GL_TRIANGLE_STRIP: int = 0x0005
