@@ -1,0 +1,273 @@
+use "std -> mem"         from "mem"
+use "std -> conv"        from "conv"
+use "std -> collections" from "col"
+
+;; ── opis wiadomości (request albo event) jako czyste dane H# ──────────
+;; `signature` to wprost sygnatura Wayland-wire, np. "2uif?oa" —
+;; dokładnie to samo, co byłoby w atrybucie <request>/<event> w XML,
+;; tylko wpisane ręcznie jako string literal zamiast parsowane z pliku.
+struct WireMessage is
+    pub name:      string
+    pub signature: string
+    ;; Nazwy interfejsów, na które wskazują argumenty typu `object`/
+    ;; `new_id` — w KOLEJNOŚCI argumentów obiektowych w sygnaturze,
+    ;; pusty string ("") dla argumentu, który nie ma stałego typu
+    ;; (np. `new_id` w wl_registry.bind, gdzie typ podaje klient).
+    ;; Puste [] dla komunikatów bez argumentów obiektowych.
+    pub arg_interfaces: [string]
+end
+
+struct WireInterface is
+    pub name:    string
+    pub version: int
+    pub requests: [WireMessage]   ;; wywoływane przez klienta (method_count/methods)
+    pub events:   [WireMessage]   ;; wysyłane do klienta (event_count/events)
+end
+
+pub fn wire_msg(name: string, sig: string) -> WireMessage is
+    return WireMessage { name: name, signature: sig, arg_interfaces: [] }
+end
+
+;; Wariant z jawnym odwzorowaniem argumentów obiektowych na nazwy
+;; interfejsów (żeby libwayland-server mogło zrobić introspekcję typów
+;; klientowi przez `wl_registry`/`wl_message.types`) — patrz `link_types`.
+pub fn wire_msg_typed(name: string, sig: string, arg_ifaces: [string]) -> WireMessage is
+    return WireMessage { name: name, signature: sig, arg_interfaces: arg_ifaces }
+end
+
+;; ── kodowanie little-endian do `bytes`, żeby przejść przez FFI ────────
+pub fn enc_u32(v: int) -> bytes is
+    return __builtin_bytes_from_ints([
+        v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255
+    ])
+end
+
+;; Pełne 64-bit kodowanie adresu (nie zakłada już, że górne bity są
+;; zerowe — bezpieczne również przy ASLR mapującym heap wysoko, oraz
+;; na platformach, gdzie sbrk/mmap zwraca adresy >4GB).
+pub fn enc_ptr(addr: int) -> bytes is
+    let lo: int = addr & 4294967295          ;; 0xFFFFFFFF — dolne 32 bity
+    let hi: int = (addr >> 32) & 4294967295  ;; górne 32 bity
+    return __builtin_bytes_concat(enc_u32(lo), enc_u32(hi))
+end
+
+pub fn poke(dest: int, offset: int, data: bytes) is
+    memcpy(dest + offset, data, __builtin_bytes_len(data))
+end
+
+;; ── odczyt pamięci (odwrotność poke) — potrzebny m.in. backendowi DRM
+;; ── do czytania `drmModeRes`/`drmModeConnector` (patrz
+;; ── backend/drm_backend.h#'s scan_outputs).
+fn zero_bytes(n: int) -> bytes is
+    let mut ints: [int] = []
+    let mut i: int = 0
+    while i < n is
+        ints.push(0)
+        i += 1
+    end
+    return __builtin_bytes_from_ints(ints)
+end
+
+pub fn peek_bytes(addr: int, n: int) -> bytes is
+    let buf: bytes = zero_bytes(n)
+    memmove(buf, addr, n)
+    return buf
+end
+
+pub fn peek_u32(addr: int) -> int is
+    let ints: [int] = __builtin_bytes_to_ints(peek_bytes(addr, 4))
+    return ints[0] | (ints[1] << 8) | (ints[2] << 16) | (ints[3] << 24)
+end
+
+pub fn peek_i32(addr: int) -> int is
+    let v: int = peek_u32(addr)
+    ;; reinterpretacja jako signed 32-bit (dopełnienie do dwóch)
+    if v >= 2147483648 is
+        return v - 4294967296
+    end
+    return v
+end
+
+pub fn peek_ptr(addr: int) -> int is
+    let ints: [int] = __builtin_bytes_to_ints(peek_bytes(addr, 8))
+    let mut v: int = 0
+    let mut i: int = 7
+    while i >= 0 is
+        v = (v << 8) | ints[i]
+        i -= 1
+    end
+    return v
+end
+
+;; Zapisuje C-string (`name` + NUL) w nowo zaalokowanej pamięci i zwraca
+;; do niej wskaźnik — odpowiednik `strdup`, ale przez naszą własną
+;; ścieżkę FFI żeby zachować spójność z resztą buildera.
+fn alloc_cstring(s: string) -> int is
+    return strdup(s)
+end
+
+;; Buduje jedną tablicę `struct wl_message[]` w pamięci i zwraca
+;; wskaźnik do jej początku (albo 0, jeśli lista jest pusta —
+;; wl_interface z method_count/event_count == 0 ma methods/events == NULL).
+;; `types` jest na tym etapie zawsze NULL — dowiązywane później przez
+;; `link_types`, gdy WSZYSTKIE interfejsy (łącznie z tymi, na które ktoś
+;; wskazuje) mają już zbudowane wl_interface*.
+fn build_message_array(msgs: [WireMessage]) -> int is
+    if msgs.len() == 0 is
+        return 0
+    end
+    let stride: int = 24 ;; sizeof(struct wl_message)
+    let table: int = calloc(msgs.len(), stride)
+    let mut i: int = 0
+    while i < msgs.len() is
+        let m: WireMessage = msgs[i]
+        let name_ptr: int = alloc_cstring(m.name)
+        let sig_ptr:  int = alloc_cstring(m.signature)
+        let base: int = table + (i * stride)
+        poke(base, 0,  enc_ptr(name_ptr))
+        poke(base, 8,  enc_ptr(sig_ptr))
+        poke(base, 16, enc_ptr(0)) ;; types — dowiązywane w drugim przebiegu
+        i += 1
+    end
+    return table
+end
+
+;; Buduje `struct wl_interface` w pamięci i zwraca do niej wskaźnik,
+;; razem z adresami jego tablic methods/events (potrzebnymi później do
+;; `link_message_types`). `types` w wiadomościach nie są tu jeszcze
+;; wypełnione — to drugi przebieg, patrz `build_protocol_set` niżej.
+;;
+;; UWAGA O STANIE: H# nie ma mutowalnych zmiennych na poziomie modułu
+;; (tylko `const`/immutable `let` poza funkcjami) — więc, w
+;; przeciwieństwie do wcześniejszej wersji tego pliku, rejestr
+;; "nazwa -> wskaźnik" NIE jest globalnym cache'em, tylko zwykłą
+;; wartością `any` (mapą) przekazywaną jawnie z funkcji do funkcji i
+;; zwracaną dalej — dokładnie ten sam styl co `VolcanState` w cs.h#.
+struct BuiltInterface is
+    pub ptr:         int
+    pub methods_ptr: int
+    pub events_ptr:  int
+end
+
+fn build_interface(iface: WireInterface) -> BuiltInterface is
+    let ptr: int = calloc(1, 40) ;; sizeof(struct wl_interface)
+    let name_ptr: int = alloc_cstring(iface.name)
+    let methods_ptr: int = build_message_array(iface.requests)
+    let events_ptr:  int = build_message_array(iface.events)
+
+    poke(ptr, 0,  enc_ptr(name_ptr))
+    poke(ptr, 8,  enc_u32(iface.version))
+    poke(ptr, 12, enc_u32(iface.requests.len()))
+    poke(ptr, 16, enc_ptr(methods_ptr))
+    poke(ptr, 24, enc_u32(iface.events.len()))
+    poke(ptr, 32, enc_ptr(events_ptr))
+
+    return BuiltInterface { ptr: ptr, methods_ptr: methods_ptr, events_ptr: events_ptr }
+end
+
+;; Buduje `wl_interface*` dla KAŻDEGO interfejsu z `ifaces` i zwraca
+;; rejestr (nazwa -> BuiltInterface, zakodowany jako string przez
+;; `col::hashmap`, tak jak reszta projektu koduje złożone wartości w
+;; mapach — patrz `cs.h#`'s `surface_index`) do użycia przez drugi
+;; przebieg (`link_all_types`).
+fn build_all(ifaces: [WireInterface]) -> any is
+    let mut registry: any = col::new_map()
+    let mut i: int = 0
+    while i < ifaces.len() is
+        let built: BuiltInterface = build_interface(ifaces[i])
+        let encoded: string = conv::int_to_str(built.ptr) + "," + conv::int_to_str(built.methods_ptr) + "," + conv::int_to_str(built.events_ptr)
+        col::hashmap_insert(registry, ifaces[i].name, encoded)
+        i += 1
+    end
+    return registry
+end
+
+fn registry_lookup(registry: any, name: string) -> BuiltInterface is
+    if !col::hashmap_contains(registry, name) is
+        return BuiltInterface { ptr: 0, methods_ptr: 0, events_ptr: 0 }
+    end
+    let encoded: string = col::hashmap_get(registry, name)
+    let parts: [string] = str_split(encoded, ",")
+    return BuiltInterface { ptr: conv::str_to_int(parts[0]), methods_ptr: conv::str_to_int(parts[1]), events_ptr: conv::str_to_int(parts[2]) }
+end
+
+fn str_split(s: string, sep: string) -> [string] is
+    let mut parts: [string] = []
+    let mut current: string = ""
+    let mut i: int = 0
+    while i < s.len() is
+        let c: string = s[i..i+1]
+        if c == sep is
+            parts.push(current)
+            current = ""
+        else is
+            current = current + c
+        end
+        i += 1
+    end
+    parts.push(current)
+    return parts
+end
+
+;; Wskaźnik do JUŻ zbudowanego interfejsu z rejestru; do wołania z
+;; `protocols/registry.h#`'s `expose` PO `build_protocol_set`.
+pub fn interface_ptr_from(registry: any, iface_name: string) -> int is
+    return registry_lookup(registry, iface_name).ptr
+end
+
+;; ── drugi przebieg: dowiązanie `wl_message.types` ─────────────────────
+;; Buduje tablicę `const struct wl_interface *types[]` dla jednej
+;; wiadomości na podstawie `arg_interfaces` (nazwy -> wskaźniki z
+;; `registry`) i zapisuje jej adres pod offsetem 16 danego `wl_message`.
+fn link_message_types(registry: any, msg_table_addr: int, index: int, msg: WireMessage) is
+    if msg.arg_interfaces.len() == 0 is
+        return
+    end
+    let types_table: int = calloc(msg.arg_interfaces.len(), 8)
+    let mut j: int = 0
+    while j < msg.arg_interfaces.len() is
+        let iface_name: string = msg.arg_interfaces[j]
+        let mut iface_ptr: int = 0
+        if iface_name != "" is
+            iface_ptr = registry_lookup(registry, iface_name).ptr
+        end
+        poke(types_table, j * 8, enc_ptr(iface_ptr))
+        j += 1
+    end
+    let msg_base: int = msg_table_addr + (index * 24)
+    poke(msg_base, 16, enc_ptr(types_table))
+end
+
+;; Dowiązuje `types` dla WSZYSTKICH wiadomości jednego interfejsu.
+fn link_types(registry: any, iface: WireInterface) is
+    let built: BuiltInterface = registry_lookup(registry, iface.name)
+    if built.ptr == 0 is
+        return ;; interfejs nie ma wpisu w rejestrze — nic do dowiązania
+    end
+    let mut i: int = 0
+    while i < iface.requests.len() is
+        link_message_types(registry, built.methods_ptr, i, iface.requests[i])
+        i += 1
+    end
+    let mut k: int = 0
+    while k < iface.events.len() is
+        link_message_types(registry, built.events_ptr, k, iface.events[k])
+        k += 1
+    end
+end
+
+;; Buduje komplet interfejsów jednego protokołu w dwóch przebiegach:
+;; (1) wl_interface dla każdego z nich, (2) dowiązanie `types` — dopiero
+;; gdy WSZYSTKIE mają już adres, więc odwołania w obie strony
+;; (np. xdg_surface <-> xdg_toplevel) działają poprawnie niezależnie od
+;; kolejności w liście. Zwraca rejestr, żeby wołający (`registry.h#`'s
+;; `expose`) mógł potem pobrać `interface_ptr_from(registry, name)`.
+pub fn build_protocol_set(ifaces: [WireInterface]) -> any is
+    let registry: any = build_all(ifaces)
+    let mut j: int = 0
+    while j < ifaces.len() is
+        link_types(registry, ifaces[j])
+        j += 1
+    end
+    return registry
+end
