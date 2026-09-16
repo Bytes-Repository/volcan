@@ -1,0 +1,27 @@
+extern static [c, "udev"] is
+    fn udev_new() -> int
+    fn udev_unref(udev: int) -> int
+
+    fn udev_monitor_new_from_netlink(udev: int, name: string) -> int
+    fn udev_monitor_filter_add_match_subsystem_devtype(mon: int, subsystem: string, devtype: int) -> int
+    fn udev_monitor_enable_receiving(mon: int) -> int
+    fn udev_monitor_get_fd(mon: int) -> int
+    fn udev_monitor_receive_device(mon: int) -> int
+    fn udev_monitor_unref(mon: int) -> int
+
+    fn udev_device_get_action(dev: int) -> int      ;; -> "add"/"remove"/"change" (char*)
+    fn udev_device_get_devnode(dev: int) -> int      ;; -> "/dev/dri/cardN" (char*)
+    fn udev_device_get_syspath(dev: int) -> int
+    fn udev_device_unref(dev: int)
+
+    ;; Wyliczenie już podłączonych urządzeń przy starcie (zanim
+    ;; zaczniemy nasłuchiwać na zmiany) — inaczej pierwszy monitor
+    ;; podłączony PRZED uruchomieniem volcana nigdy by się nie pojawił.
+    fn udev_enumerate_new(udev: int) -> int
+    fn udev_enumerate_add_match_subsystem(en: int, subsystem: string) -> int
+    fn udev_enumerate_scan_devices(en: int) -> int
+    fn udev_enumerate_get_list_entry(en: int) -> int
+    fn udev_list_entry_get_next(entry: int) -> int
+    fn udev_list_entry_get_name(entry: int) -> int
+    fn udev_device_new_from_syspath(udev: int, syspath: string) -> int
+end
