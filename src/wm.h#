@@ -1,0 +1,120 @@
+struct Rect is
+    pub x: int
+    pub y: int
+    pub w: int
+    pub h: int
+end
+
+;; Bitmaski xdg_positioner anchor/gravity (xdg-shell.xml)
+pub const POS_ANCHOR_NONE:   int = 0
+pub const POS_ANCHOR_TOP:    int = 1
+pub const POS_ANCHOR_BOTTOM: int = 2
+pub const POS_ANCHOR_LEFT:   int = 3
+pub const POS_ANCHOR_RIGHT:  int = 4
+pub const POS_ANCHOR_TOP_LEFT: int = 5
+pub const POS_ANCHOR_BOTTOM_LEFT: int = 6
+pub const POS_ANCHOR_TOP_RIGHT: int = 7
+pub const POS_ANCHOR_BOTTOM_RIGHT: int = 8
+
+struct Positioner is
+    pub width:  int
+    pub height: int
+    pub anchor_rect: Rect
+    pub anchor:  int
+    pub gravity: int
+    pub offset_x: int
+    pub offset_y: int
+end
+
+pub fn new_positioner() -> Positioner is
+    return Positioner {
+        width: 0, height: 0,
+        anchor_rect: Rect { x: 0, y: 0, w: 0, h: 0 },
+        anchor: POS_ANCHOR_NONE, gravity: POS_ANCHOR_NONE,
+        offset_x: 0, offset_y: 0,
+    }
+end
+
+;; Oblicza pozycję (x, y) popupu WZGLĘDEM okna nadrzędnego, zgodnie z
+;; algorytmem xdg-shell: punkt zaczepienia leży na krawędzi/rogu
+;; `anchor_rect` wskazanym przez `anchor`, a popup jest "odsunięty" od
+;; tego punktu w kierunku wskazanym przez `gravity`.
+;;
+;; UWAGA: `constraint_adjustment` (odbicie/przesunięcie popupu, gdy
+;; wychodzi poza ekran) NIE jest tu jeszcze zaimplementowane — to
+;; osobny, nietrywialny kawałek logiki (trzeba znać geometrię
+;; wyjścia/ekranu w miejscu wołania). Zwracana pozycja jest poprawna
+;; dla przypadku "popup mieści się na ekranie".
+pub fn compute_popup_position(p: Positioner) -> Rect is
+    let mut anchor_x: int = p.anchor_rect.x + (p.anchor_rect.w / 2)
+    let mut anchor_y: int = p.anchor_rect.y + (p.anchor_rect.h / 2)
+
+    if p.anchor == POS_ANCHOR_TOP || p.anchor == POS_ANCHOR_TOP_LEFT || p.anchor == POS_ANCHOR_TOP_RIGHT is
+        anchor_y = p.anchor_rect.y
+    end
+    if p.anchor == POS_ANCHOR_BOTTOM || p.anchor == POS_ANCHOR_BOTTOM_LEFT || p.anchor == POS_ANCHOR_BOTTOM_RIGHT is
+        anchor_y = p.anchor_rect.y + p.anchor_rect.h
+    end
+    if p.anchor == POS_ANCHOR_LEFT || p.anchor == POS_ANCHOR_TOP_LEFT || p.anchor == POS_ANCHOR_BOTTOM_LEFT is
+        anchor_x = p.anchor_rect.x
+    end
+    if p.anchor == POS_ANCHOR_RIGHT || p.anchor == POS_ANCHOR_TOP_RIGHT || p.anchor == POS_ANCHOR_BOTTOM_RIGHT is
+        anchor_x = p.anchor_rect.x + p.anchor_rect.w
+    end
+
+    let mut x: int = anchor_x + p.offset_x
+    let mut y: int = anchor_y + p.offset_y
+
+    ;; grawitacja: w którą stronę "rośnie" popup od punktu zaczepienia
+    if p.gravity == POS_ANCHOR_LEFT || p.gravity == POS_ANCHOR_TOP_LEFT || p.gravity == POS_ANCHOR_BOTTOM_LEFT is
+        x = x - p.width
+    end
+    if p.gravity == POS_ANCHOR_TOP || p.gravity == POS_ANCHOR_TOP_LEFT || p.gravity == POS_ANCHOR_TOP_RIGHT is
+        y = y - p.height
+    end
+
+    return Rect { x: x, y: y, w: p.width, h: p.height }
+end
+
+;; ── ograniczenia rozmiaru toplevel (set_min_size/set_max_size) ────────
+pub fn clamp_size(w: int, h: int, min_w: int, min_h: int, max_w: int, max_h: int) -> Rect is
+    let mut cw: int = w
+    let mut ch: int = h
+    if min_w > 0 && cw < min_w is cw = min_w end
+    if min_h > 0 && ch < min_h is ch = min_h end
+    if max_w > 0 && cw > max_w is cw = max_w end
+    if max_h > 0 && ch > max_h is ch = max_h end
+    return Rect { x: 0, y: 0, w: cw, h: ch }
+end
+
+;; ── state machine configure/ack_configure ─────────────────────────────
+struct ConfigureState is
+    pub last_sent_serial:   int
+    pub last_acked_serial:  int
+    pub pending_width:      int
+    pub pending_height:     int
+end
+
+pub fn new_configure_state() -> ConfigureState is
+    return ConfigureState { last_sent_serial: 0, last_acked_serial: 0, pending_width: 0, pending_height: 0 }
+end
+
+;; Wołane, gdy kompozytor CHCE zmienić rozmiar/stan okna (np. w
+;; odpowiedzi na przeciąganie krawędzi albo snap do połowy ekranu) —
+;; zapamiętuje serial, który klient musi później potwierdzić.
+pub fn begin_configure(c: ConfigureState, new_serial: int, w: int, h: int) -> ConfigureState is
+    return ConfigureState { last_sent_serial: new_serial, last_acked_serial: c.last_acked_serial, pending_width: w, pending_height: h }
+end
+
+;; Wołane z `xdg_surface.ack_configure(serial)`. Zwraca `true` tylko
+;; jeśli klient potwierdził NAJNOWSZY wysłany serial — starsze/za
+;; wczesne potwierdzenia są ignorowane (zgodnie z protokołem, mogą się
+;; zdarzyć przy szybkich zmianach rozmiaru z rzędu).
+pub fn ack_configure(c: ConfigureState, acked_serial: int) -> (ConfigureState, bool) is
+    let applied: bool = acked_serial == c.last_sent_serial
+    let new_state: ConfigureState = ConfigureState {
+        last_sent_serial: c.last_sent_serial, last_acked_serial: acked_serial,
+        pending_width: c.pending_width, pending_height: c.pending_height,
+    }
+    return (new_state, applied)
+end
