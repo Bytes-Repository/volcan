@@ -1,0 +1,30 @@
+pub fn import_dmabuf_texture(egl_display: int, egl_context: int, dmabuf_fd: int) -> int is
+    let image: int = eglCreateImage(egl_display, egl_context, EGL_LINUX_DMA_BUF_EXT, 0, 0)
+    let mut tex: int = 0
+    glGenTextures(1, tex)
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex)
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, image)
+    return tex
+end
+
+;; Przechodzi po `stacking_order` i rysuje każdą zmapowaną powierzchnię.
+;; To jest jedyne miejsce, które "wie", jak surface.width/height/x/y
+;; przekładają się na współrzędne w buforze ramki wyjścia — jeśli
+;; kiedyś dojdą przejścia (animacje minimalizacji, cienie okien), to
+;; właśnie tutaj.
+pub fn render_frame(state: cs::VolcanState, output_w: int, output_h: int) is
+    glViewport(0, 0, output_w, output_h)
+    glClearColor(0.10, 0.10, 0.12, 1.0)
+    glClear(GL_COLOR_BUFFER_BIT)
+
+    let mut i: int = 0
+    while i < state.stacking_order.len() is
+        let res: int = state.stacking_order[i]
+        let s: surface::Surface = cs::get_surface(state, res)
+        if s.is_mapped is
+            glBindTexture(GL_TEXTURE_2D, s.texture_id)
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+        end
+        i += 1
+    end
+end
