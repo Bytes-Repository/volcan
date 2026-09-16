@@ -1,0 +1,42 @@
+extern static [c, "input"] is
+    fn libinput_udev_create_context(iface: int, user_data: int, udev: int) -> int
+    fn libinput_udev_assign_seat(ctx: int, seat_id: string) -> int
+    fn libinput_unref(ctx: int) -> int
+    fn libinput_get_fd(ctx: int) -> int
+    fn libinput_dispatch(ctx: int) -> int
+    fn libinput_get_event(ctx: int) -> int
+    fn libinput_event_destroy(event: int)
+    fn libinput_event_get_type(event: int) -> int
+    fn libinput_event_get_keyboard_event(event: int) -> int
+    fn libinput_event_get_pointer_event(event: int) -> int
+    fn libinput_event_get_touch_event(event: int) -> int
+    fn libinput_event_get_gesture_event(event: int) -> int
+
+    fn libinput_event_keyboard_get_key(ev: int) -> int
+    fn libinput_event_keyboard_get_key_state(ev: int) -> int
+    fn libinput_event_keyboard_get_time(ev: int) -> int
+
+    fn libinput_event_pointer_get_dx(ev: int) -> f64
+    fn libinput_event_pointer_get_dy(ev: int) -> f64
+    fn libinput_event_pointer_get_absolute_x_transformed(ev: int, width: int) -> f64
+    fn libinput_event_pointer_get_absolute_y_transformed(ev: int, height: int) -> f64
+    fn libinput_event_pointer_get_button(ev: int) -> int
+    fn libinput_event_pointer_get_button_state(ev: int) -> int
+    fn libinput_event_pointer_get_axis_value(ev: int, axis: int) -> f64
+
+    fn libinput_event_touch_get_slot(ev: int) -> int
+    fn libinput_event_touch_get_x_transformed(ev: int, width: int) -> f64
+    fn libinput_event_touch_get_y_transformed(ev: int, height: int) -> f64
+end
+
+;; libinput_event_type (z libinput.h)
+pub const LIBINPUT_EVENT_KEYBOARD_KEY:      int = 300
+pub const LIBINPUT_EVENT_POINTER_MOTION:    int = 400
+pub const LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE: int = 401
+pub const LIBINPUT_EVENT_POINTER_BUTTON:    int = 402
+pub const LIBINPUT_EVENT_POINTER_AXIS:      int = 403
+pub const LIBINPUT_EVENT_TOUCH_DOWN:        int = 500
+pub const LIBINPUT_EVENT_TOUCH_UP:          int = 501
+pub const LIBINPUT_EVENT_TOUCH_MOTION:      int = 502
+pub const LIBINPUT_KEY_STATE_PRESSED:       int = 1
+pub const LIBINPUT_BUTTON_STATE_PRESSED:    int = 1
