@@ -1,0 +1,71 @@
+use "std -> log" from "log"
+
+struct VolcanDisplay is
+    pub listen_fd:   int
+    pub socket_path: string
+    pub socket_name: string ;; np. "wayland-1" — to idzie do zmiennej środowiskowej WAYLAND_DISPLAY klientów
+end
+
+;; `struct sockaddr_un { sa_family_t sun_family; char sun_path[108]; }`
+;; — budowane tą samą techniką co tablice protokołu w protocols/wire.h#.
+fn build_sockaddr_un(path: string) -> bytes is
+    let mut ints: [int] = [AF_UNIX, 0] ;; sa_family_t (u16) jako 2 bajty + 0 paddingu do wyrównania... uproszczone do 2 bajtów rodziny
+    let path_bytes: [int] = __builtin_bytes_to_ints(string_to_bytes(path))
+    let mut i: int = 0
+    while i < path_bytes.len() is
+        ints.push(path_bytes[i])
+        i += 1
+    end
+    ints.push(0) ;; NUL kończący ścieżkę
+    while ints.len() < 110 is
+        ints.push(0)
+        i += 1
+    end
+    return __builtin_bytes_from_ints(ints)
+end
+
+;; Znajduje pierwszy wolny numer `wayland-N` w `$XDG_RUNTIME_DIR`,
+;; dokładnie tak jak robi to `wl_display_add_socket_auto` pod maską —
+;; tu jednak jawnie w H#, żeby cały cykl życia gniazda był w jednym
+;; miejscu, którym zarządzamy.
+pub fn create() -> VolcanDisplay is
+    let runtime_dir: string = "/run/user/1000" ;; w pełnej wersji: getenv("XDG_RUNTIME_DIR")
+    let mut n: int = 0
+    let mut created: bool = false
+    let mut fd: int = -1
+    let mut path: string = ""
+    let mut name: string = ""
+
+    while !created && n < 32 is
+        name = "wayland-" + to_string(n)
+        path = runtime_dir + "/" + name
+        fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let addr: bytes = build_sockaddr_un(path)
+        let bind_result: int = bind(fd, addr, 110)
+        if bind_result == 0 is
+            created = true
+        else is
+            sock::close(fd)
+            n += 1
+        end
+    end
+
+    if !created is
+        log::error("volcan: brak wolnego gniazda wayland-N w " + runtime_dir)
+    end
+
+    listen(fd, 128)
+    fcntl(fd, F_SETFL, O_NONBLOCK)
+    log::info("volcan: nasłuchiwanie na $WAYLAND_DISPLAY=" + name)
+
+    return VolcanDisplay { listen_fd: fd, socket_path: path, socket_name: name }
+end
+
+pub fn accept_client(disp: VolcanDisplay) -> int is
+    return accept(disp.listen_fd, 0, 0)
+end
+
+pub fn shutdown(disp: VolcanDisplay) is
+    sock::close(disp.listen_fd)
+    unlink(disp.socket_path)
+end
