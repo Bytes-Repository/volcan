@@ -1,0 +1,87 @@
+use "std -> conv"        from "conv"
+
+struct PendingState is
+    pub buffer_resource: int   ;; wl_resource* bufora dołączonego przez attach, albo 0
+    pub damage_x: int
+    pub damage_y: int
+    pub damage_w: int
+    pub damage_h: int
+    pub scale: int
+    pub transform: int
+end
+
+struct Surface is
+    pub resource:    int   ;; wl_resource* tej wl_surface
+    pub client:      int   ;; wl_client*
+    pub x:           f64
+    pub y:           f64
+    pub width:       int
+    pub height:      int
+    pub current:     PendingState
+    pub pending:     PendingState
+    pub is_mapped:   bool
+    ;; Zestawiona (composited) tekstura GL — wypełniana przez
+    ;; renderer/gles.h# po imporcie bufora (shm albo dmabuf).
+    pub texture_id:  int
+end
+
+fn empty_pending() -> PendingState is
+    return PendingState { buffer_resource: 0, damage_x: 0, damage_y: 0, damage_w: 0, damage_h: 0, scale: 1, transform: 0 }
+end
+
+pub fn new_surface(resource: int, client: int) -> Surface is
+    return Surface {
+        resource: resource, client: client, x: 0.0, y: 0.0,
+        width: 0, height: 0,
+        current: empty_pending(), pending: empty_pending(),
+        is_mapped: false, texture_id: 0,
+    }
+end
+
+;; wl_surface.attach — zapamiętaj nowy bufor jako "pending" (nie od razu
+;; widoczny — dopiero po `commit`, dokładnie jak w prawdziwym protokole).
+pub fn attach(s: Surface, buffer_resource: int) -> Surface is
+    let mut p: PendingState = s.pending
+    p.buffer_resource = buffer_resource
+    return Surface { resource: s.resource, client: s.client, x: s.x, y: s.y,
+                      width: s.width, height: s.height, current: s.current,
+                      pending: p, is_mapped: s.is_mapped, texture_id: s.texture_id }
+end
+
+;; wl_surface.damage / damage_buffer — akumuluj obszar do przemalowania.
+pub fn damage(s: Surface, x: int, y: int, w: int, h: int) -> Surface is
+    let mut p: PendingState = s.pending
+    p.damage_x = x
+    p.damage_y = y
+    p.damage_w = w
+    p.damage_h = h
+    return Surface { resource: s.resource, client: s.client, x: s.x, y: s.y,
+                      width: s.width, height: s.height, current: s.current,
+                      pending: p, is_mapped: s.is_mapped, texture_id: s.texture_id }
+end
+
+;; wl_surface.commit — przełącz pending -> current. Tu (poza tym
+;; szkieletem) należałoby: jeśli buffer_resource != 0, zaimportować
+;; bufor (shm -> memcpy do tekstury, albo dmabuf -> EGLImage zero-copy,
+;; patrz renderer/gles.h# i ffi/egl.h#) i oznaczyć powierzchnię jako
+;; mapped.
+pub fn commit(s: Surface) -> Surface is
+    let mapped: bool = s.pending.buffer_resource != 0
+    return Surface { resource: s.resource, client: s.client, x: s.x, y: s.y,
+                      width: s.width, height: s.height,
+                      current: s.pending, pending: empty_pending(),
+                      is_mapped: mapped, texture_id: s.texture_id }
+end
+
+pub fn contains_point(s: Surface, x: f64, y: f64) -> bool is
+    if !s.is_mapped is
+        return false
+    end
+    return x >= s.x && x <= s.x + conv::int_to_float(s.width) &&
+           y >= s.y && y <= s.y + conv::int_to_float(s.height)
+end
+
+;; Rejestr powierzchni per-kompozytor został przeniesiony do
+;; `compositor_state.h#` (`get_surface`/`put_surface`), bo `col::hashmap`
+;; przechowuje tylko wartości typu `string`, a nie całe struktury —
+;; ten plik odpowiada teraz wyłącznie za logikę POJEDYNCZEJ powierzchni.
