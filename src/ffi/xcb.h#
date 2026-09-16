@@ -1,0 +1,32 @@
+extern static [c] is
+    ;; proces: fork+exec Xwayland z odpowiednimi deskryptorami
+    fn fork() -> int
+    fn execvp(file: string, argv: int) -> int
+    fn waitpid(pid: int, status: int, options: int) -> int
+    fn kill(pid: int, sig: int) -> int
+    fn socketpair(domain: int, sock_type: int, protocol: int, sv: int) -> int
+    fn setenv(name: string, value: string, overwrite: int) -> int
+end
+
+extern static [c, "xcb"] is
+    fn xcb_connect(displayname: string, screenp: int) -> int
+    fn xcb_disconnect(conn: int)
+    fn xcb_get_setup(conn: int) -> int
+    fn xcb_setup_roots_iterator(setup: int) -> int
+    fn xcb_flush(conn: int) -> int
+    fn xcb_generate_id(conn: int) -> int
+    fn xcb_poll_for_event(conn: int) -> int
+    fn xcb_wait_for_event(conn: int) -> int
+
+    ;; ── zarządzanie oknami (window manager XWayland) ──
+    fn xcb_create_window(conn: int, depth: int, wid: int, parent: int, x: int, y: int, w: int, h: int, border: int, class_: int, visual: int, value_mask: int, value_list: int) -> int
+    fn xcb_map_window(conn: int, window: int) -> int
+    fn xcb_configure_window(conn: int, window: int, value_mask: int, value_list: int) -> int
+    fn xcb_change_property(conn: int, mode: int, window: int, property: int, type_: int, format: int, data_len: int, data: int) -> int
+    fn xcb_set_selection_owner(conn: int, owner: int, selection: int, timestamp: int) -> int
+    fn xcb_change_window_attributes(conn: int, window: int, mask: int, values: int) -> int
+end
+
+pub const XCB_CW_EVENT_MASK: int = 2048
+pub const XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT: int = 0x00080000
+pub const XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY:   int = 0x00040000
