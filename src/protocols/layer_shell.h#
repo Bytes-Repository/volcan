@@ -1,0 +1,48 @@
+pub fn zwlr_layer_shell_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "zwlr_layer_shell_v1", version: 5,
+        requests: [
+            wire::wire_msg_typed("get_layer_surface", "nooc",
+                ["zwlr_layer_surface_v1", "wl_surface", "wl_output"]),
+            wire::wire_msg("destroy",           ""),
+        ],
+        events: [],
+    }
+end
+
+pub fn zwlr_layer_surface_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "zwlr_layer_surface_v1", version: 5,
+        requests: [
+            wire::wire_msg("set_size",              "uu"),
+            wire::wire_msg("set_anchor",             "u"),
+            wire::wire_msg("set_exclusive_zone",     "i"),
+            wire::wire_msg("set_margin",             "iiii"),
+            wire::wire_msg("set_keyboard_interactivity", "u"),
+            wire::wire_msg_typed("get_popup",        "o", ["xdg_popup"]),
+            wire::wire_msg("ack_configure",          "u"),
+            wire::wire_msg("destroy",                ""),
+            wire::wire_msg("set_layer",              "2u"),
+        ],
+        events: [
+            wire::wire_msg("configure", "uuu"),
+            wire::wire_msg("closed",    ""),
+        ],
+    }
+end
+
+;; Warstwy (layer) w kolejności od tła do góry — layer_shell.set_layer
+pub const LAYER_BACKGROUND: int = 0
+pub const LAYER_BOTTOM:     int = 1
+pub const LAYER_TOP:        int = 2
+pub const LAYER_OVERLAY:    int = 3
+
+;; Krawędzie zakotwiczenia (bitmaska) — set_anchor
+pub const ANCHOR_TOP:    int = 1
+pub const ANCHOR_BOTTOM: int = 2
+pub const ANCHOR_LEFT:   int = 4
+pub const ANCHOR_RIGHT:  int = 8
+
+pub fn all_layer_shell_interfaces() -> [wire::WireInterface] is
+    return [ zwlr_layer_shell_interface(), zwlr_layer_surface_interface() ]
+end
