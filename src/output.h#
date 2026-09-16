@@ -1,0 +1,62 @@
+struct Mode is
+    pub width:    int
+    pub height:   int
+    pub refresh_mHz: int   ;; mHz, jak w protokole wl_output.mode (np. 60000 = 60Hz)
+    pub preferred: bool
+end
+
+struct Output is
+    pub name:        string
+    pub make:        string
+    pub model:       string
+    pub x:           int
+    pub y:           int
+    pub width_mm:    int
+    pub height_mm:   int
+    pub scale:       int
+    pub current_mode: Mode
+    pub modes:        [Mode]
+    ;; identyfikator connectora DRM (crtc/connector id), wypełniany
+    ;; przez backend/drm_backend.h# po skanie sprzętu.
+    pub drm_connector_id: int
+    pub drm_crtc_id:      int
+    pub wl_global:         int  ;; wl_global* wystawiony per-output
+end
+
+pub fn new_output(name: string, w: int, h: int, refresh_mHz: int) -> Output is
+    let mode: Mode = Mode { width: w, height: h, refresh_mHz: refresh_mHz, preferred: true }
+    return Output {
+        name: name, make: "volcan", model: "virtual",
+        x: 0, y: 0, width_mm: 0, height_mm: 0, scale: 1,
+        current_mode: mode, modes: [mode],
+        drm_connector_id: 0, drm_crtc_id: 0, wl_global: 0,
+    }
+end
+
+;; Ustawia pozycję wyjścia w globalnej przestrzeni logicznej (przy
+;; wielu monitorach — obok siebie, jak w `wlr-output-management`).
+pub fn place_at(o: Output, x: int, y: int) -> Output is
+    return Output { name: o.name, make: o.make, model: o.model, x: x, y: y,
+                     width_mm: o.width_mm, height_mm: o.height_mm, scale: o.scale,
+                     current_mode: o.current_mode, modes: o.modes,
+                     drm_connector_id: o.drm_connector_id, drm_crtc_id: o.drm_crtc_id,
+                     wl_global: o.wl_global }
+end
+
+;; Automatyczny układ wielu wyjść: kolejno OD LEWEJ DO PRAWEJ, każdy
+;; przy górnej krawędzi (y=0) tuż obok poprzedniego — dokładnie tak, jak
+;; domyślnie ustawia się nowo podłączony monitor w większości desktopów,
+;; zanim użytkownik ręcznie przeciągnie go w innym kierunku. Wołane po
+;; każdym hot-plugu (patrz backend/udev_monitor.h#) z pełną, aktualną
+;; listą wyjść.
+pub fn layout_outputs(outs: [Output]) -> [Output] is
+    let mut result: [Output] = []
+    let mut cursor_x: int = 0
+    let mut i: int = 0
+    while i < outs.len() is
+        result.push(place_at(outs[i], cursor_x, 0))
+        cursor_x = cursor_x + outs[i].current_mode.width
+        i += 1
+    end
+    return result
+end
