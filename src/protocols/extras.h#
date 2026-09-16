@@ -1,0 +1,77 @@
+pub fn linux_dmabuf_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "zwp_linux_dmabuf_v1", version: 5,
+        requests: [
+            wire::wire_msg("destroy",              ""),
+            wire::wire_msg("create_params",        "n"),
+            wire::wire_msg("get_default_feedback", "3n"),
+            wire::wire_msg("get_surface_feedback", "3no"),
+        ],
+        events: [
+            wire::wire_msg("format",    "u"),
+            wire::wire_msg("modifier",  "3uuu"),
+        ],
+    }
+end
+
+pub fn linux_buffer_params_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "zwp_linux_buffer_params_v1", version: 5,
+        requests: [
+            wire::wire_msg("destroy",  ""),
+            wire::wire_msg("add",      "huuuu"),
+            wire::wire_msg("create",   "iiuu"),
+            wire::wire_msg("create_immed", "niiuu"),
+        ],
+        events: [
+            wire::wire_msg("created", "n"),
+            wire::wire_msg("failed",  ""),
+        ],
+    }
+end
+
+pub fn presentation_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wp_presentation", version: 2,
+        requests: [
+            wire::wire_msg("destroy",   ""),
+            wire::wire_msg("feedback",  "no"),
+        ],
+        events: [ wire::wire_msg("clock_id", "u") ],
+    }
+end
+
+pub fn presentation_feedback_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wp_presentation_feedback", version: 2,
+        requests: [],
+        events: [
+            wire::wire_msg("sync_output",  "o"),
+            wire::wire_msg("presented",    "uuuuuuu"),
+            wire::wire_msg("discarded",    ""),
+        ],
+    }
+end
+
+pub fn viewporter_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wp_viewporter", version: 1,
+        requests: [
+            wire::wire_msg("destroy",       ""),
+            wire::wire_msg("get_viewport",  "no"),
+        ],
+        events: [],
+    }
+end
+
+pub fn viewport_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wp_viewport", version: 1,
+        requests: [
+            wire::wire_msg("destroy",           ""),
+            wire::wire_msg("set_source",        "ffff"),
+            wire::wire_msg("set_destination",   "ii"),
+        ],
+        events: [],
+    }
+end
