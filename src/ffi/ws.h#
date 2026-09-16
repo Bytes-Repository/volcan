@@ -1,0 +1,53 @@
+extern static [c, "wayland-server"] is
+    ;; ── cykl życia wl_display ──
+    fn wl_display_create()                      -> int
+    fn wl_display_destroy(display: int)
+    fn wl_display_add_socket_auto(display: int)  -> int   ;; zwraca int(char*) z nazwą "wayland-N"
+    fn wl_display_add_socket(display: int, name: string) -> int
+    fn wl_display_run(display: int)
+    fn wl_display_terminate(display: int)
+    fn wl_display_flush_clients(display: int)
+    fn wl_display_get_event_loop(display: int)   -> int
+
+    ;; ── pętla zdarzeń (współdzielona z DRM/libinput przez fd) ──
+    fn wl_event_loop_add_fd(loop_: int, fd: int, mask: int, cb: int, data: int) -> int
+    fn wl_event_loop_add_timer(loop_: int, cb: int, data: int) -> int
+    fn wl_event_loop_dispatch(loop_: int, timeout_ms: int) -> int
+    fn wl_event_source_timer_update(source: int, ms_delay: int) -> int
+    fn wl_event_source_remove(source: int) -> int
+
+    ;; ── globale (rejestrowane w wl_registry klienta) ──
+    ;; `interface` to wskaźnik na naszą własną, WKOMPILOWANĄ tabelę
+    ;; wl_interface (patrz protocols/wire.h# — budowana w pamięci
+    ;; jednorazowo przy starcie, bez żadnego pliku .xml).
+    fn wl_global_create(display: int, interface: int, version: int, data: int, bind_cb: int) -> int
+    fn wl_global_destroy(global: int)
+
+    ;; ── klienci ──
+    fn wl_client_create(display: int, fd: int) -> int
+    fn wl_client_destroy(client: int)
+    fn wl_client_get_display(client: int) -> int
+    fn wl_client_flush(client: int)
+
+    ;; ── zasoby (instancje interfejsu po stronie klienta) ──
+    fn wl_resource_create(client: int, interface: int, version: int, id: int) -> int
+    fn wl_resource_destroy(resource: int)
+    fn wl_resource_get_id(resource: int) -> int
+    fn wl_resource_get_client(resource: int) -> int
+    fn wl_resource_get_user_data(resource: int) -> int
+    fn wl_resource_set_user_data(resource: int, data: int)
+    fn wl_resource_set_implementation(resource: int, impl_: int, data: int, destroy_cb: int)
+    fn wl_resource_post_event_array(resource: int, opcode: int, args: int)
+    fn wl_resource_post_error(resource: int, code: int, msg: string)
+
+    ;; ── argumenty wiadomości (wl_argument union przez wspólny bufor) ──
+    fn wl_array_init(arr: int)
+    fn wl_array_add(arr: int, size: int) -> int
+    fn wl_array_release(arr: int)
+end
+
+;; Maski zdarzeń dla wl_event_loop_add_fd (z wayland-server-core.h)
+pub const WL_EVENT_READABLE: int = 1
+pub const WL_EVENT_WRITABLE: int = 2
+pub const WL_EVENT_HANGUP:   int = 4
+pub const WL_EVENT_ERROR:    int = 8
