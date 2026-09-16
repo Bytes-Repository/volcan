@@ -1,0 +1,26 @@
+struct Session is
+    pub seat:    int      ;; libseat* (0, jeśli sesja nie jest używana — np. tryb deweloperski root)
+    pub fd:      int
+    pub active:  bool
+end
+
+pub fn inactive_session() -> Session is
+    return Session { seat: 0, fd: -1, active: true }
+end
+
+;; Odpytaj sesję po tym, jak jej fd (jeśli != -1) zgłosi gotowość w
+;; `poll()`. Zwraca zaktualizowany `Session` — `active == false` znaczy
+;; "oddaliśmy GPU, przestań renderować/wystawiać klatki", dopóki nie
+;; wróci `true`.
+pub fn poll_session(s: Session) -> Session is
+    if s.seat == 0 is
+        return s ;; sesja nieużywana (np. deweloperski root / backend zagnieżdżony)
+    end
+    ;; `libseat_dispatch` w pełnej implementacji: > 0 = coś się zmieniło,
+    ;; wtedy trzeba by odróżnić enable/disable — bez natywnego listenera
+    ;; (patrz komentarz nad `struct Session`) najbezpieczniejsze
+    ;; uproszczenie to: po dispatchu spróbuj `drmSetMaster`; sukces =
+    ;; aktywna, EBUSY/EACCES = nieaktywna. Zaimplementowane w
+    ;; `backend/drm_backend.h#`'s `try_reacquire`.
+    return s
+end
