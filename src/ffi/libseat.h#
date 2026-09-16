@@ -1,0 +1,14 @@
+extern static [c, "seat"] is
+    fn libseat_open_seat(iface: int, data: int) -> int
+    fn libseat_close_seat(seat: int) -> int
+    fn libseat_get_fd(seat: int) -> int
+    fn libseat_dispatch(seat: int, timeout_ms: int) -> int
+    fn libseat_seat_name(seat: int) -> int  ;; char* nazwy seata, np. "seat0"
+
+    ;; Otwiera węzeł urządzenia (np. `/dev/dri/card0`) przez sesję —
+    ;; to jest odpowiednik `open()`, tylko bez wymogu roota.
+    fn libseat_open_device(seat: int, path: string, fd_out: int) -> int
+    fn libseat_close_device(seat: int, device_id: int) -> int
+
+    fn libseat_switch_session(seat: int, session: int) -> int
+end
