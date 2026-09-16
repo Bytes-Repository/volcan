@@ -1,0 +1,61 @@
+struct UdevMonitor is
+    pub udev: int
+    pub mon:  int
+    pub fd:   int
+end
+
+pub fn init() -> UdevMonitor is
+    let u: int = udev_new()
+    let mon: int = udev_monitor_new_from_netlink(u, "udev")
+    udev_monitor_filter_add_match_subsystem_devtype(mon, "drm", 0)
+    udev_monitor_enable_receiving(mon)
+    let fd: int = udev_monitor_get_fd(mon)
+    return UdevMonitor { udev: u, mon: mon, fd: fd }
+end
+
+struct UdevEvent is
+    pub action:    string  ;; "add" / "remove" / "change"
+    pub devnode:   string  ;; np. "/dev/dri/card1", może być "" (np. dla samych subsystemów bez node)
+    pub has_event: bool
+end
+
+;; Wołane po tym, jak `um.fd` zgłosi gotowość w `poll()`.
+pub fn poll_event(um: UdevMonitor) -> UdevEvent is
+    let dev: int = udev_monitor_receive_device(um.mon)
+    if dev == 0 is
+        return UdevEvent { action: "", devnode: "", has_event: false }
+    end
+    let action_ptr: int = udev_device_get_action(dev)
+    let devnode_ptr: int = udev_device_get_devnode(dev)
+    let action: string = read_cstring(action_ptr)
+    let mut devnode: string = ""
+    if devnode_ptr != 0 is
+        devnode = read_cstring(devnode_ptr)
+    end
+    udev_device_unref(dev)
+    return UdevEvent { action: action, devnode: devnode, has_event: true }
+end
+
+fn read_cstring(addr: int) -> string is
+    if addr == 0 is
+        return ""
+    end
+    let chunk: int = 64
+    let mut collected: [int] = []
+    let mut offset: int = 0
+    let mut found: bool = false
+    while offset < 1024 && !found is
+        let raw: [int] = __builtin_bytes_to_ints(wire::peek_bytes(addr + offset, chunk))
+        let mut j: int = 0
+        while j < chunk && !found is
+            if raw[j] == 0 is
+                found = true
+            else is
+                collected.push(raw[j])
+            end
+            j += 1
+        end
+        offset += chunk
+    end
+    return __builtin_bytes_to_string(__builtin_bytes_from_ints(collected))
+end
