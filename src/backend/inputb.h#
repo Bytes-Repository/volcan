@@ -1,0 +1,80 @@
+use "std -> log"    from "log"
+
+struct InputBackend is
+    pub context: int      ;; libinput* (utworzony przez `libinput_path_create_context`
+                            ;; w docelowej implementacji — patrz uwaga wyżej)
+    pub fd:      int
+    pub kmap:    keymap::Keymap
+    ;; polityka fokusu: `false` = click-to-focus (domyślna), `true` =
+    ;; focus-follows-mouse (fokus klawiatury podąża za kursorem, bez
+    ;; potrzeby kliknięcia — popularne w konfiguracjach tiling WM).
+    pub focus_follows_mouse: bool
+end
+
+pub fn init(seat_name: string, layout: string, focus_follows_mouse: bool) -> InputBackend is
+    ;; Patrz uwaga na górze pliku — `0` tu oznacza "do podpięcia po
+    ;; przejściu na `libinput_path_create_context`".
+    let ctx: int = libinput_udev_create_context(0, 0, 0)
+    libinput_udev_assign_seat(ctx, seat_name)
+    let fd: int = libinput_get_fd(ctx)
+    let km: keymap::Keymap = keymap::build(layout, "", "")
+    log::info("volcan/input: libinput podłączony do seata " + seat_name + " (układ: " + layout + ")")
+    return InputBackend { context: ctx, fd: fd, kmap: km, focus_follows_mouse: focus_follows_mouse }
+end
+
+;; Wołane po tym, jak `poll()` zgłosi gotowość `backend.fd`.
+pub fn dispatch(backend: InputBackend, state: cs::VolcanState) -> cs::VolcanState is
+    libinput_dispatch(backend.context)
+    let mut s: cs::VolcanState = state
+    let mut event: int = libinput_get_event(backend.context)
+    while event != 0 is
+        let ev_type: int = libinput_event_get_type(event)
+
+        if ev_type == LIBINPUT_EVENT_POINTER_MOTION is
+            let pev: int = libinput_event_get_pointer_event(event)
+            let dx: f64 = libinput_event_pointer_get_dx(pev)
+            let dy: f64 = libinput_event_pointer_get_dy(pev)
+            s = seat::handle_motion(s, dx, dy, backend.focus_follows_mouse)
+        end
+
+        if ev_type == LIBINPUT_EVENT_POINTER_BUTTON is
+            let pev2: int = libinput_event_get_pointer_event(event)
+            let button: int = libinput_event_pointer_get_button(pev2)
+            let btn_state: int = libinput_event_pointer_get_button_state(pev2)
+            s = seat::handle_button(s, button, btn_state == LIBINPUT_BUTTON_STATE_PRESSED)
+        end
+
+        if ev_type == LIBINPUT_EVENT_KEYBOARD_KEY is
+            let kev: int = libinput_event_get_keyboard_event(event)
+            let key: int = libinput_event_keyboard_get_key(kev)
+            let key_state: int = libinput_event_keyboard_get_key_state(kev)
+            let pressed: bool = key_state == LIBINPUT_KEY_STATE_PRESSED
+            keymap::update_key(backend.kmap, key, pressed)
+            s = seat::handle_key(s, key, pressed, keymap::serialize_mods(backend.kmap))
+        end
+
+        ;; ── dotyk wieloma palcami (multi-touch) ──
+        if ev_type == LIBINPUT_EVENT_TOUCH_DOWN || ev_type == LIBINPUT_EVENT_TOUCH_MOTION is
+            let tev: int = libinput_event_get_touch_event(event)
+            let slot: int = libinput_event_touch_get_slot(tev)
+            let tx: f64 = libinput_event_touch_get_x_transformed(tev, 1920)
+            let ty: f64 = libinput_event_touch_get_y_transformed(tev, 1080)
+            s = seat::handle_touch(s, slot, tx, ty, ev_type == LIBINPUT_EVENT_TOUCH_DOWN)
+        end
+        if ev_type == LIBINPUT_EVENT_TOUCH_UP is
+            let tev2: int = libinput_event_get_touch_event(event)
+            let slot2: int = libinput_event_touch_get_slot(tev2)
+            s = seat::handle_touch_up(s, slot2)
+        end
+
+        ;; ── gesty touchpada (pinch/swipe) i tablet graficzny mają
+        ;; ── własne typy zdarzeń w libinput (LIBINPUT_EVENT_GESTURE_*,
+        ;; ── LIBINPUT_EVENT_TABLET_TOOL_*) — nieopisane jeszcze w
+        ;; ── ffi/libinput.h#'s stałych; punkt rozbudowy analogiczny do
+        ;; ── powyższych gałęzi (dodaj stałą, dodaj gałąź `if`).
+
+        libinput_event_destroy(event)
+        event = libinput_get_event(backend.context)
+    end
+    return s
+end
