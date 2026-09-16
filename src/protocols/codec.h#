@@ -1,0 +1,152 @@
+use "std -> conv" from "conv"
+
+struct DecodedMessage is
+    pub object_id: int
+    pub opcode:    int
+    pub arg_values: [args::WireArg]
+    pub total_len:  int  ;; ile bajtów zajęła cała wiadomość (do przesunięcia w buforze)
+end
+
+;; Próbuje odczytać JEDNĄ kompletną wiadomość z bufora `buf` (bytes
+;; odebrane właśnie z gniazda klienta). `signature` pochodzi z naszej
+;; własnej tabeli protokołu dla danego (interfejs, opcode) — bo to MY
+;; zdefiniowaliśmy protokoły (core_wl.h# itd.), więc nie trzeba jej
+;; wyciągać z pamięci C. Zwraca `total_len == 0`, jeśli bufor nie
+;; zawiera jeszcze kompletnej wiadomości (trzeba doczytać więcej z gniazda).
+pub fn try_decode(buf: [int], signature: string) -> DecodedMessage is
+    if buf.len() < 8 is
+        return DecodedMessage { object_id: 0, opcode: 0, arg_values: [], total_len: 0 }
+    end
+    let object_id: int = read_u32_le(buf, 0)
+    let size_and_opcode: int = read_u32_le(buf, 4)
+    let opcode: int = size_and_opcode & 65535
+    let msg_size: int = (size_and_opcode >> 16) & 65535
+
+    if buf.len() < msg_size is
+        return DecodedMessage { object_id: 0, opcode: 0, arg_values: [], total_len: 0 } ;; niekompletne
+    end
+
+    let mut values: [args::WireArg] = []
+    let mut offset: int = 8
+    let mut i: int = 0
+    while i < signature.len() is
+        let c: string = signature[i..i+1]
+        if c == "?" is
+            i += 1
+        else is
+            if is_digit(c) is
+                i += 1
+            else is
+                if c == "i" is
+                    values.push(args::arg_int(to_signed32(read_u32_le(buf, offset))))
+                    offset += 4
+                end
+                if c == "u" || c == "o" || c == "n" is
+                    values.push(args::arg_uint(read_u32_le(buf, offset)))
+                    offset += 4
+                end
+                if c == "f" is
+                    values.push(args::arg_fixed(conv::int_to_float(to_signed32(read_u32_le(buf, offset))) / 256.0))
+                    offset += 4
+                end
+                if c == "s" || c == "a" is
+                    let len: int = read_u32_le(buf, offset)
+                    offset += 4
+                    let mut chars: [int] = []
+                    let mut j: int = 0
+                    while j < len - 1 is ;; -1: nie kopiuj NUL kończącego string
+                        chars.push(buf[offset + j])
+                        j += 1
+                    end
+                    values.push(args::arg_string(__builtin_bytes_to_string(__builtin_bytes_from_ints(chars))))
+                    offset += pad4(len)
+                end
+                i += 1
+            end
+        end
+    end
+
+    return DecodedMessage { object_id: object_id, opcode: opcode, arg_values: values, total_len: msg_size }
+end
+
+;; Serializuje wiadomość WYCHODZĄCĄ (event do klienta) do surowych
+;; bajtów gotowych do `write()`/`send()` na gnieździe klienta — to jest
+;; ścieżka, którą idą teraz WSZYSTKIE eventy (zamiast
+;; `wl_resource_post_event_array`, bo ta funkcja nadal jest poprawnym
+;; bindingiem FFI, ale trzymanie się jednej, spójnej ścieżki I/O — samo
+;; gniazdo — upraszcza cały stos i unika mieszania dwóch modeli).
+pub fn encode_message(object_id: int, opcode: int, signature: string, values: [args::WireArg]) -> bytes is
+    let mut body: bytes = __builtin_bytes_from_ints([])
+    let mut vi: int = 0
+    let mut i: int = 0
+    while i < signature.len() is
+        let c: string = signature[i..i+1]
+        if c == "?" is
+            i += 1
+        else is
+            if is_digit(c) is
+                i += 1
+            else is
+                let v: args::WireArg = values[vi]
+                if c == "i" || c == "u" || c == "o" || c == "n" is
+                    body = __builtin_bytes_concat(body, u32_le(v.int_val))
+                end
+                if c == "f" is
+                    body = __builtin_bytes_concat(body, u32_le(conv::float_to_int(v.fixed_val * 256.0)))
+                end
+                if c == "s" || c == "a" is
+                    let str_bytes: bytes = string_to_bytes(v.str_val)
+                    let len: int = __builtin_bytes_len(str_bytes) + 1 ;; + NUL
+                    body = __builtin_bytes_concat(body, u32_le(len))
+                    body = __builtin_bytes_concat(body, str_bytes)
+                    body = __builtin_bytes_concat(body, zero_pad(pad4(len) - len + 1))
+                end
+                vi += 1
+                i += 1
+            end
+        end
+    end
+
+    let total_len: int = 8 + __builtin_bytes_len(body)
+    let header: bytes = __builtin_bytes_concat(u32_le(object_id), u32_le((total_len << 16) | opcode))
+    return __builtin_bytes_concat(header, body)
+end
+
+;; ── małe helpery ───────────────────────────────────────────────────
+fn read_u32_le(buf: [int], offset: int) -> int is
+    return buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16) | (buf[offset + 3] << 24)
+end
+
+fn to_signed32(v: int) -> int is
+    if v >= 2147483648 is
+        return v - 4294967296
+    end
+    return v
+end
+
+fn u32_le(v: int) -> bytes is
+    return __builtin_bytes_from_ints([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255])
+end
+
+fn pad4(n: int) -> int is
+    let rem: int = n % 4
+    if rem == 0 is
+        return n
+    end
+    return n + (4 - rem)
+end
+
+fn zero_pad(n: int) -> bytes is
+    let mut ints: [int] = []
+    let mut i: int = 0
+    while i < n is
+        ints.push(0)
+        i += 1
+    end
+    return __builtin_bytes_from_ints(ints)
+end
+
+fn is_digit(c: string) -> bool is
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+           c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+end
