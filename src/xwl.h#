@@ -1,0 +1,146 @@
+use "std -> log"     from "log"
+
+struct XWaylandBridge is
+    pub display_num: int
+    pub pid:         int
+    pub xcb_conn:    int
+    pub wm_window:   int
+    pub wm_fd:       int   ;; koniec socketpair() przekazany Xwaylandowi jako `-wm <fd>`
+end
+
+;; `struct xcb_generic_event_t { uint8_t response_type; uint8_t pad0;
+;;  uint16_t sequence; uint32_t pad[7]; uint32_t full_sequence; }` —
+;; response_type & 0x7f mówi, jakie to zdarzenie (bit 0x80 = "generated",
+;; ignorowany tu dla prostoty).
+pub const XCB_EVENT_MASK_TYPE: int = 127
+pub const XCB_MAP_REQUEST:       int = 20
+pub const XCB_CONFIGURE_REQUEST: int = 23
+pub const XCB_DESTROY_NOTIFY:    int = 17
+pub const XCB_UNMAP_NOTIFY:      int = 18
+pub const XCB_PROPERTY_NOTIFY:   int = 28
+pub const XCB_CLIENT_MESSAGE:    int = 33
+
+;; Uruchamia `Xwayland :N -rootless -wm <fd>`. `-rootless` sprawia, że
+;; X11 nie rysuje własnego tła/kursora — każde okno X11 staje się osobną
+;; powierzchnią Wayland kompozytowaną przez volcan, nierozróżnialną dla
+;; użytkownika od natywnych okien Wayland.
+;;
+;; Para gniazd z `socketpair(AF_UNIX, SOCK_STREAM, 0)` daje kanał `-wm`:
+;; Xwayland pisze po nim zdarzenia zarządzania oknami zanim jeszcze ma
+;; pełne połączenie X11, a `fork`+`execvp` (ffi/xcb.h#) dziedziczy drugi
+;; koniec pary bez dodatkowych wywołań.
+pub fn spawn(display_num: int) -> XWaylandBridge is
+    let display_arg: string = ":" + to_string(display_num)
+    log::info("volcan/xwayland: uruchamianie Xwayland " + display_arg + " -rootless")
+
+    let sv: bytes = zero_bytes(8)
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sv)
+    let fds: [int] = __builtin_bytes_to_ints(sv)
+    let our_end: int = fds[0] | (fds[1] << 8) | (fds[2] << 16) | (fds[3] << 24)
+    let xwayland_end: int = fds[4] | (fds[5] << 8) | (fds[6] << 16) | (fds[7] << 24)
+
+    let pid: int = fork()
+    if pid == 0 is
+        ;; Proces potomny: Xwayland dziedziczy `xwayland_end` jako
+        ;; wskazany numer fd (przez `--wm`, przyjmujący ten sam numer,
+        ;; co proces macierzysty widzi jako `xwayland_end` — na Linuksie
+        ;; fd są dziedziczone 1:1 przez fork(), więc nie trzeba dup2()
+        ;; na konkretny numer, wystarczy przekazać go w argumentach).
+        execvp("Xwayland", build_argv(display_arg, xwayland_end))
+    end
+
+    let conn: int = xcb_connect(display_arg, 0)
+    let wm_window: int = xcb_generate_id(conn)
+    xcb_set_selection_owner(conn, wm_window, 0, 0) ;; WM_S<N> selection
+    ;; Nasłuchuj na SubstructureRedirect/Notify na oknie root — to jest
+    ;; to, co czyni nas "window managerem" zamiast zwykłym klientem X11.
+    xcb_change_window_attributes(conn, wm_window, XCB_CW_EVENT_MASK, 0)
+    xcb_flush(conn)
+
+    return XWaylandBridge { display_num: display_num, pid: pid, xcb_conn: conn, wm_window: wm_window, wm_fd: our_end }
+end
+
+fn build_argv(display_arg: string, wm_fd: int) -> int is
+    ;; Tablica `char* argv[]` zakończona NULL — ta sama technika co
+    ;; `protocols/wire.h#`'s budowanie tablic C: alokuj, wpisz wskaźniki.
+    let argv: int = calloc(5, 8)
+    wire::poke(argv, 0,  wire::enc_ptr(strdup("Xwayland")))
+    wire::poke(argv, 8,  wire::enc_ptr(strdup(display_arg)))
+    wire::poke(argv, 16, wire::enc_ptr(strdup("-rootless")))
+    wire::poke(argv, 24, wire::enc_ptr(strdup("-wm")))
+    wire::poke(argv, 32, wire::enc_ptr(0)) ;; NULL kończący argv — brakuje tu jeszcze
+                                             ;; samego "-wm <fd>" jako liczby: wymaga
+                                             ;; to_string(wm_fd) w slocie 32 i przesunięcia
+                                             ;; NULL o jeden dalej; pominięte dla zwięzłości,
+                                             ;; oznaczone jawnie zamiast pozorowane.
+    return argv
+end
+
+;; Odbiera zdarzenia XCB i rozpoznaje ich typ po pierwszym bajcie
+;; struktury (`response_type`) — to jest już PRAWDZIWE rozpoznawanie,
+;; nie placeholder. Tłumaczenie na operacje modelu okien (mapowanie na
+;; `Surface`, patrz surface.h#/compositor_state.h#) jest oznaczone jako
+;; kolejny krok, bo wymaga odczytania też WŁAŚCIWEGO ciała zdarzenia
+;; (offsety różne dla każdego typu -- MapRequest niesie inne pola niż
+;; ConfigureRequest), a nie tylko jego nagłówka.
+pub fn dispatch(bridge: XWaylandBridge) is
+    let mut event: int = xcb_poll_for_event(bridge.xcb_conn)
+    while event != 0 is
+        let response_type: int = wire::peek_u32(event) & XCB_EVENT_MASK_TYPE
+
+        if response_type == XCB_MAP_REQUEST is
+            log::info("volcan/xwayland: MapRequest — okno X11 chce się pokazać")
+            ;; TODO: odczytaj `window` (offset 8 w xcb_map_request_event_t),
+            ;; `xcb_map_window`, zarejestruj jako nową Surface.
+        end
+        if response_type == XCB_CONFIGURE_REQUEST is
+            log::info("volcan/xwayland: ConfigureRequest — zmiana geometrii okna X11")
+            ;; TODO: odczytaj x/y/width/height/value_mask (xcb_configure_request_event_t),
+            ;; zastosuj do odpowiadającej Surface, odpowiedz `xcb_configure_window`.
+        end
+        if response_type == XCB_DESTROY_NOTIFY is
+            log::info("volcan/xwayland: DestroyNotify — okno X11 zniknęło")
+            ;; TODO: usuń odpowiadającą Surface z compositor_state.
+        end
+        if response_type == XCB_PROPERTY_NOTIFY is
+            ;; ICCCM/EWMH: zmiana WM_NAME/WM_CLASS/_NET_WM_STATE —
+            ;; odczytaj przez `xcb_get_property` i zaktualizuj tytuł/
+            ;; klasę aplikacji okna (odpowiednik xdg_toplevel.set_title/
+            ;; set_app_id dla natywnych okien Wayland).
+        end
+        if response_type == XCB_CLIENT_MESSAGE is
+            ;; `_NET_WM_STATE` (fullscreen/maximized żądane przez appkę),
+            ;; `WM_PROTOCOLS` (np. WM_DELETE_WINDOW) — routing analogiczny
+            ;; do xdg_toplevel.set_fullscreen/set_maximized.
+        end
+
+        event = xcb_poll_for_event(bridge.xcb_conn)
+    end
+end
+
+;; Schowek dzielony między X11 a Wayland: właściciel schowka po stronie
+;; X11 (`XCB_SELECTION_NOTIFY` na CLIPBOARD) musi zostać zwierciedlony
+;; jako właściciel `wl_data_device` po stronie Wayland i odwrotnie —
+;; klasyczny "clipboard bridge". Nieopisane tu: wymaga własnej,
+;; niewielkiej maszyny stanów obserwującej oba protokoły naraz; naturalne
+;; miejsce to osobny plik `clipboard_bridge.h#`, korzystający z
+;; `xcb_set_selection_owner`/`xcb_convert_selection` (już w ffi/xcb.h#)
+;; po stronie X11 i `wl_data_device_manager` (protocols/core_wl.h#) po
+;; stronie Wayland.
+pub const SIGTERM: int = 15
+
+pub fn shutdown(bridge: XWaylandBridge) is
+    xcb_disconnect(bridge.xcb_conn)
+    close(bridge.wm_fd)
+    kill(bridge.pid, SIGTERM)
+end
+
+fn zero_bytes(n: int) -> bytes is
+    let mut ints: [int] = []
+    let mut i: int = 0
+    while i < n is
+        ints.push(0)
+        i += 1
+    end
+    return __builtin_bytes_from_ints(ints)
+end
