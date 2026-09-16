@@ -1,0 +1,81 @@
+struct LayerSurfaceState is
+    pub output_index:      int  ;; indeks w VolcanState.outputs
+    pub layer:              int  ;; LAYER_BACKGROUND..LAYER_OVERLAY
+    pub anchor:              int  ;; bitmaska ANCHOR_TOP/BOTTOM/LEFT/RIGHT
+    pub exclusive_zone:      int  ;; piksele zarezerwowane od krawędzi wskazanej `anchor`
+    pub margin_top:    int
+    pub margin_bottom: int
+    pub margin_left:   int
+    pub margin_right:  int
+    pub width:  int
+    pub height: int
+end
+
+;; Obszar wyjścia POMNIEJSZONY o wszystkie strefy wykluczenia warstw
+;; zakotwiczonych do tego wyjścia — to jest ten prostokąt, w którym
+;; kompozytor powinien układać zwykłe okna xdg-shell (żeby nie nachodziły
+;; na panel/dock). Odpowiednik "usable area" z wlroots.
+pub fn usable_area(out: output::Output, layers: [LayerSurfaceState]) -> LayerSurfaceState is
+    let mut top: int = 0
+    let mut bottom: int = 0
+    let mut left: int = 0
+    let mut right: int = 0
+
+    let mut i: int = 0
+    while i < layers.len() is
+        let l: LayerSurfaceState = layers[i]
+        if l.exclusive_zone > 0 is
+            if (l.anchor & 1) != 0 && (l.anchor & 2) == 0 is ;; TOP, nie BOTTOM
+                top = max_int(top, l.exclusive_zone + l.margin_top)
+            end
+            if (l.anchor & 2) != 0 && (l.anchor & 1) == 0 is ;; BOTTOM, nie TOP
+                bottom = max_int(bottom, l.exclusive_zone + l.margin_bottom)
+            end
+            if (l.anchor & 4) != 0 && (l.anchor & 8) == 0 is ;; LEFT, nie RIGHT
+                left = max_int(left, l.exclusive_zone + l.margin_left)
+            end
+            if (l.anchor & 8) != 0 && (l.anchor & 4) == 0 is ;; RIGHT, nie LEFT
+                right = max_int(right, l.exclusive_zone + l.margin_right)
+            end
+        end
+        i += 1
+    end
+
+    return LayerSurfaceState {
+        output_index: 0, layer: 0, anchor: 0, exclusive_zone: 0,
+        margin_top: top, margin_bottom: bottom, margin_left: left, margin_right: right,
+        width: out.current_mode.width - left - right,
+        height: out.current_mode.height - top - bottom,
+    }
+end
+
+;; Oblicza faktyczny prostokąt warstwy na ekranie na podstawie jej
+;; `anchor`/`width`/`height`/marginesów i geometrii wyjścia, do którego
+;; jest zakotwiczona (`output_index` -> `outputs[output_index]`).
+;; Zwraca (x, y, w, h) jako `LayerSurfaceState`-podobne pole (reużywam
+;; strukturę zamiast tworzyć osobny Rect — węższy zakres pliku).
+pub fn place_layer_surface(out: output::Output, l: LayerSurfaceState) -> (int, int, int, int) is
+    let mut w: int = l.width
+    let mut h: int = l.height
+    if w == 0 is
+        w = out.current_mode.width
+    end
+    if h == 0 is
+        h = out.current_mode.height
+    end
+
+    let mut x: int = out.x + (out.current_mode.width - w) / 2
+    let mut y: int = out.y + (out.current_mode.height - h) / 2
+
+    if (l.anchor & 4) != 0 is x = out.x + l.margin_left end
+    if (l.anchor & 8) != 0 is x = out.x + out.current_mode.width - w - l.margin_right end
+    if (l.anchor & 1) != 0 is y = out.y + l.margin_top end
+    if (l.anchor & 2) != 0 is y = out.y + out.current_mode.height - h - l.margin_bottom end
+
+    return (x, y, w, h)
+end
+
+fn max_int(a: int, b: int) -> int is
+    if a > b is return a end
+    return b
+end
