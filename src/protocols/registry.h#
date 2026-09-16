@@ -1,0 +1,44 @@
+fn expose(display: int, registry: any, iface_name: string, version: int, bind_cb: int, user_data: int) -> int is
+    let iface_ptr: int = wire::interface_ptr_from(registry, iface_name)
+    return wl_global_create(display, iface_ptr, version, user_data, bind_cb)
+end
+
+;; Wystawia komplet globali potrzebnych do działającego, "batteries
+;; included" kompozytora. `bind_cb` to adres jednej, wspólnej funkcji
+;; dispatchującej, która na podstawie nazwy interfejsu klienta tworzy
+;; właściwy `wl_resource` i podpina jego implementację requestów — to
+;; jest to miejsce, które w smithay robią makra `delegate_xdg_shell!`/
+;; `delegate_compositor!` itd.
+pub fn register_all(display: int, bind_cb: int, state_ptr: int) is
+    ;; Krok 1: zbuduj KOMPLET tablic wl_interface z poprawnie
+    ;; dowiązanym `types` (dwuprzebiegowo, per zestaw protokołu).
+    let core_registry: any = wire::build_protocol_set(core_wl::all_core_interfaces())
+    let xdg_registry:  any = wire::build_protocol_set(xdg::all_xdg_interfaces())
+    let layer_registry: any = wire::build_protocol_set(layer_shell::all_layer_shell_interfaces())
+    let extras_registry: any = wire::build_protocol_set([
+        extras::linux_dmabuf_interface(), extras::linux_buffer_params_interface(),
+        extras::presentation_interface(), extras::presentation_feedback_interface(),
+        extras::viewporter_interface(), extras::viewport_interface(),
+    ])
+
+    ;; Krok 2: wystaw globale, które klient odkrywa przez wl_registry.
+    ;; (wl_surface/wl_region/wl_buffer/xdg_surface/... NIE są globalami
+    ;; — powstają jako wl_resource dopiero jako wynik requestu na
+    ;; globalu, np. wl_compositor.create_surface — więc nie mają tu
+    ;; swojego `expose`, mimo że mają zbudowany wl_interface powyżej.)
+    expose(display, core_registry, "wl_compositor",          6, bind_cb, state_ptr)
+    expose(display, core_registry, "wl_subcompositor",       1, bind_cb, state_ptr)
+    expose(display, core_registry, "wl_shm",                 2, bind_cb, state_ptr)
+    expose(display, core_registry, "wl_seat",                9, bind_cb, state_ptr)
+    expose(display, core_registry, "wl_output",              4, bind_cb, state_ptr)
+    expose(display, core_registry, "wl_data_device_manager", 3, bind_cb, state_ptr)
+
+    expose(display, xdg_registry, "xdg_wm_base",                    6, bind_cb, state_ptr)
+    expose(display, xdg_registry, "zxdg_decoration_manager_v1",     1, bind_cb, state_ptr)
+
+    expose(display, layer_registry, "zwlr_layer_shell_v1",          5, bind_cb, state_ptr)
+
+    expose(display, extras_registry, "zwp_linux_dmabuf_v1",         5, bind_cb, state_ptr)
+    expose(display, extras_registry, "wp_presentation",             2, bind_cb, state_ptr)
+    expose(display, extras_registry, "wp_viewporter",               1, bind_cb, state_ptr)
+end
