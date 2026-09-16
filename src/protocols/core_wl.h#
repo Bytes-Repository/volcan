@@ -1,0 +1,237 @@
+pub fn wl_display_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_display", version: 1,
+        requests: [
+            wire::wire_msg("sync",        "n"),
+            wire::wire_msg("get_registry","n"),
+        ],
+        events: [
+            wire::wire_msg("error",       "ous"),
+            wire::wire_msg("delete_id",   "u"),
+        ],
+    }
+end
+
+pub fn wl_registry_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_registry", version: 1,
+        requests: [ wire::wire_msg("bind", "usun") ],
+        events:   [ wire::wire_msg("global", "usu"), wire::wire_msg("global_remove", "u") ],
+    }
+end
+
+pub fn wl_callback_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_callback", version: 1,
+        requests: [], events: [ wire::wire_msg("done", "u") ],
+    }
+end
+
+pub fn wl_compositor_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_compositor", version: 6,
+        requests: [
+            wire::wire_msg_typed("create_surface", "n", ["wl_surface"]),
+            wire::wire_msg_typed("create_region",  "n", ["wl_region"]),
+        ],
+        events: [],
+    }
+end
+
+pub fn wl_surface_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_surface", version: 6,
+        requests: [
+            wire::wire_msg("destroy",              ""),
+            wire::wire_msg("attach",               "?oii"),
+            wire::wire_msg("damage",                "iiii"),
+            wire::wire_msg("frame",                 "n"),
+            wire::wire_msg("set_opaque_region",     "?o"),
+            wire::wire_msg("set_input_region",      "?o"),
+            wire::wire_msg("commit",                ""),
+            wire::wire_msg("set_buffer_transform",  "2i"),
+            wire::wire_msg("set_buffer_scale",      "3i"),
+            wire::wire_msg("damage_buffer",         "4iiii"),
+            wire::wire_msg("offset",                "5ii"),
+        ],
+        events: [
+            wire::wire_msg("enter",             "o"),
+            wire::wire_msg("leave",             "o"),
+            wire::wire_msg("preferred_buffer_scale",     "6i"),
+            wire::wire_msg("preferred_buffer_transform", "6u"),
+        ],
+    }
+end
+
+pub fn wl_region_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_region", version: 1,
+        requests: [
+            wire::wire_msg("destroy",   ""),
+            wire::wire_msg("add",       "iiii"),
+            wire::wire_msg("subtract",  "iiii"),
+        ],
+        events: [],
+    }
+end
+
+pub fn wl_shm_pool_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_shm_pool", version: 2,
+        requests: [
+            wire::wire_msg_typed("create_buffer", "niiiiu", ["wl_buffer"]),
+            wire::wire_msg("destroy",       ""),
+            wire::wire_msg("resize",        "i"),
+        ],
+        events: [],
+    }
+end
+
+pub fn wl_shm_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_shm", version: 2,
+        requests: [ wire::wire_msg_typed("create_pool", "nhi", ["wl_shm_pool"]) ],
+        events:   [ wire::wire_msg("format", "u") ],
+    }
+end
+
+pub fn wl_buffer_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_buffer", version: 1,
+        requests: [ wire::wire_msg("destroy", "") ],
+        events:   [ wire::wire_msg("release", "") ],
+    }
+end
+
+pub fn wl_output_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_output", version: 4,
+        requests: [ wire::wire_msg("release", "3") ],
+        events: [
+            wire::wire_msg("geometry",    "iiiiissi"),
+            wire::wire_msg("mode",        "uiii"),
+            wire::wire_msg("done",        "2"),
+            wire::wire_msg("scale",       "2i"),
+            wire::wire_msg("name",        "4s"),
+            wire::wire_msg("description", "4s"),
+        ],
+    }
+end
+
+pub fn wl_seat_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_seat", version: 9,
+        requests: [
+            wire::wire_msg_typed("get_pointer",  "n", ["wl_pointer"]),
+            wire::wire_msg_typed("get_keyboard", "n", ["wl_keyboard"]),
+            wire::wire_msg_typed("get_touch",    "n", ["wl_touch"]),
+            wire::wire_msg("release",      "5"),
+        ],
+        events: [
+            wire::wire_msg("capabilities", "u"),
+            wire::wire_msg("name",         "2s"),
+        ],
+    }
+end
+
+pub fn wl_pointer_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_pointer", version: 9,
+        requests: [
+            wire::wire_msg("set_cursor", "u?oii"),
+            wire::wire_msg("release",    "3"),
+        ],
+        events: [
+            wire::wire_msg("enter",           "ouff"),
+            wire::wire_msg("leave",           "ou"),
+            wire::wire_msg("motion",          "uff"),
+            wire::wire_msg("button",          "uuuu"),
+            wire::wire_msg("axis",            "uuf"),
+            wire::wire_msg("frame",           "5"),
+            wire::wire_msg("axis_source",     "5u"),
+            wire::wire_msg("axis_stop",       "5uu"),
+            wire::wire_msg("axis_discrete",   "5ui"),
+        ],
+    }
+end
+
+pub fn wl_keyboard_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_keyboard", version: 9,
+        requests: [ wire::wire_msg("release", "3") ],
+        events: [
+            wire::wire_msg("keymap",     "uhu"),
+            wire::wire_msg("enter",      "ooa"),
+            wire::wire_msg("leave",      "ou"),
+            wire::wire_msg("key",        "uuuu"),
+            wire::wire_msg("modifiers",  "uuuuu"),
+            wire::wire_msg("repeat_info","4ii"),
+        ],
+    }
+end
+
+pub fn wl_touch_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_touch", version: 9,
+        requests: [ wire::wire_msg("release", "3") ],
+        events: [
+            wire::wire_msg("down",       "uuoiff"),
+            wire::wire_msg("up",         "uui"),
+            wire::wire_msg("motion",     "uiff"),
+            wire::wire_msg("frame",      ""),
+            wire::wire_msg("cancel",     ""),
+        ],
+    }
+end
+
+pub fn wl_data_device_manager_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_data_device_manager", version: 3,
+        requests: [
+            wire::wire_msg("create_data_source", "n"),
+            wire::wire_msg("get_data_device",    "no"),
+        ],
+        events: [],
+    }
+end
+
+pub fn wl_subcompositor_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_subcompositor", version: 1,
+        requests: [
+            wire::wire_msg("destroy",          ""),
+            wire::wire_msg("get_subsurface",   "noo"),
+        ],
+        events: [],
+    }
+end
+
+pub fn wl_subsurface_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "wl_subsurface", version: 1,
+        requests: [
+            wire::wire_msg("destroy",          ""),
+            wire::wire_msg("set_position",     "ii"),
+            wire::wire_msg("place_above",      "o"),
+            wire::wire_msg("place_below",      "o"),
+            wire::wire_msg("set_sync",         ""),
+            wire::wire_msg("set_desync",       ""),
+        ],
+        events: [],
+    }
+end
+
+;; Pełny zestaw rdzennych interfejsów, do przekazania w jednym
+;; wywołaniu `wire::build_protocol_set` (dwuprzebiegowe dowiązanie
+;; `types` — patrz protocols/wire.h#).
+pub fn all_core_interfaces() -> [wire::WireInterface] is
+    return [
+        wl_display_interface(), wl_registry_interface(), wl_callback_interface(),
+        wl_compositor_interface(), wl_surface_interface(), wl_region_interface(),
+        wl_shm_pool_interface(), wl_shm_interface(), wl_buffer_interface(),
+        wl_output_interface(), wl_seat_interface(), wl_pointer_interface(),
+        wl_keyboard_interface(), wl_touch_interface(),
+        wl_data_device_manager_interface(),
+        wl_subcompositor_interface(), wl_subsurface_interface(),
+    ]
+end
