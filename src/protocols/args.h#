@@ -1,0 +1,175 @@
+use "std -> conv" from "conv"
+
+pub const ARG_INT:    int = 0  ;; i
+pub const ARG_UINT:   int = 1  ;; u
+pub const ARG_FIXED:  int = 2  ;; f
+pub const ARG_STRING: int = 3  ;; s
+pub const ARG_OBJECT: int = 4  ;; o
+pub const ARG_NEW_ID: int = 5  ;; n
+pub const ARG_FD:     int = 6  ;; h
+
+struct WireArg is
+    pub kind:     int
+    pub int_val:  int      ;; i / u / n / o (jako wl_resource*) / h
+    pub str_val:  string   ;; s
+    pub fixed_val: f64     ;; f — wartość "ludzka" (przed zakodowaniem 24.8)
+end
+
+pub fn arg_int(v: int)      -> WireArg is return WireArg { kind: ARG_INT,    int_val: v, str_val: "", fixed_val: 0.0 } end
+pub fn arg_uint(v: int)     -> WireArg is return WireArg { kind: ARG_UINT,   int_val: v, str_val: "", fixed_val: 0.0 } end
+pub fn arg_object(res: int) -> WireArg is return WireArg { kind: ARG_OBJECT, int_val: res, str_val: "", fixed_val: 0.0 } end
+pub fn arg_new_id(id: int)  -> WireArg is return WireArg { kind: ARG_NEW_ID, int_val: id, str_val: "", fixed_val: 0.0 } end
+pub fn arg_fd(fd: int)      -> WireArg is return WireArg { kind: ARG_FD,     int_val: fd, str_val: "", fixed_val: 0.0 } end
+pub fn arg_string(s: string) -> WireArg is return WireArg { kind: ARG_STRING, int_val: 0, str_val: s, fixed_val: 0.0 } end
+pub fn arg_fixed(v: f64)    -> WireArg is return WireArg { kind: ARG_FIXED,  int_val: 0, str_val: "", fixed_val: v } end
+
+;; wl_fixed_t: 24.8 stałoprzecinkowo, jako surowy int32.
+fn encode_fixed(v: f64) -> int is
+    return conv::float_to_int(v * 256.0)
+end
+
+fn decode_fixed(raw: int) -> f64 is
+    return conv::int_to_float(raw) / 256.0
+end
+
+;; ── budowanie tablicy `union wl_argument[]` ────────────────────────────
+;; UWAGA: `build_args_array`/`slot_bytes` poniżej to ŚCIEŻKA NATYWNA
+;; (do użytku razem z `protocols/registry.h#`/`wl_resource_post_event_array`,
+;; patrz uwaga na górze tamtego pliku) — NIE jest wołane przez aktualną
+;; pętlę główną. Bieżąca ścieżka koduje eventy bezpośrednio na bajty
+;; wire-protokołu przez `protocols/wire_codec.h#`'s `encode_message`,
+;; używając tego samego typu `WireArg` zdefiniowanego niżej (ten typ
+;; JEST współdzielony między obiema ścieżkami — zmienia się tylko to,
+;; jak `WireArg[]` trafia na gniazdo: przez `union wl_argument*` +
+;; `wl_resource_post_event_array`, albo przez surowe bajty + `send()`).
+;; Każdy slot to 8 bajtów (rozmiar unii na 64-bit, bo musi pomieścić
+;; wskaźnik `const char *`/`struct wl_object *`). Dla typów 32-bit
+;; (i/u/f/n/h) górne 4 bajty slotu są zerowe — dokładnie tak, jak
+;; leżałyby w prawdziwej unii C przy zerowanej pamięci.
+fn slot_bytes(a: WireArg) -> bytes is
+    if a.kind == ARG_STRING is
+        let ptr: int = strdup(a.str_val)
+        return wire_ptr_bytes(ptr)
+    end
+    if a.kind == ARG_OBJECT is
+        return wire_ptr_bytes(a.int_val) ;; wl_resource* już istnieje jako obiekt
+    end
+    if a.kind == ARG_FIXED is
+        return wire_u32_bytes(encode_fixed(a.fixed_val))
+    end
+    ;; i / u / n / h — wszystkie 32-bit, ta sama reprezentacja bitowa
+    return wire_u32_bytes(a.int_val)
+end
+
+;; Re-eksport małych helperów z wire.h# (moduł prywatny tam) — budujemy
+;; lokalnie identyczne kodowanie, żeby args.h# nie zależał od
+;; wewnętrznych, niepublicznych funkcji wire.h#.
+fn wire_u32_bytes(v: int) -> bytes is
+    return __builtin_bytes_concat(
+        __builtin_bytes_from_ints([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255]),
+        __builtin_bytes_from_ints([0, 0, 0, 0])
+    )
+end
+
+fn wire_ptr_bytes(addr: int) -> bytes is
+    let lo: int = addr & 4294967295
+    let hi: int = (addr >> 32) & 4294967295
+    return __builtin_bytes_concat(
+        __builtin_bytes_from_ints([lo & 255, (lo >> 8) & 255, (lo >> 16) & 255, (lo >> 24) & 255]),
+        __builtin_bytes_from_ints([hi & 255, (hi >> 8) & 255, (hi >> 16) & 255, (hi >> 24) & 255])
+    )
+end
+
+;; Buduje `union wl_argument[]` gotowe do `wl_resource_post_event_array`.
+;; Zwraca (wskaźnik, długość_w_slotach) — długość nie jest w praktyce
+;; potrzebna wywołującemu (libwayland zna ją z `wl_message.signature`
+;; zapisanej dla danego opcode w interfejsie), ale zwracamy ją dla
+;; klarowności i ew. własnej walidacji przez wołającego.
+pub fn build_args_array(args: [WireArg]) -> int is
+    if args.len() == 0 is
+        return 0
+    end
+    let table: int = calloc(args.len(), 8)
+    let mut i: int = 0
+    while i < args.len() is
+        memcpy(table + (i * 8), slot_bytes(args[i]), 8)
+        i += 1
+    end
+    return table
+end
+
+;; ── odczyt argumentów requestu przychodzącego od klienta ──────────────
+;; Wołane z dispatcher.h# z surowym wskaźnikiem `union wl_argument *args`
+;; przekazanym przez libwayland-server, oraz sygnaturą requestu (z
+;; naszej własnej `WireMessage`, bo my ją zdefiniowaliśmy — nie trzeba
+;; jej "odgadywać" z powrotem z pamięci).
+pub fn read_args(args_ptr: int, signature: string) -> [WireArg] is
+    let mut result: [WireArg] = []
+    let mut slot: int = 0
+    let mut i: int = 0
+    while i < signature.len() is
+        let c: string = signature[i..i+1]
+        ;; pomiń modyfikatory sygnatury: cyfry (wersja od której request
+        ;; istnieje) i '?' (poprzedni argument nullable) — nie zajmują
+        ;; własnego slotu w tablicy argumentów.
+        if c == "?" is
+            i += 1
+        else is
+            if str_is_digit(c) is
+                i += 1
+            else is
+                let base: int = slot * 8
+                if c == "i" is
+                    result.push(arg_int(wire::peek_i32(args_ptr + base)))
+                end
+                if c == "u" || c == "n" || c == "h" is
+                    result.push(arg_uint(wire::peek_u32(args_ptr + base)))
+                end
+                if c == "f" is
+                    result.push(arg_fixed(decode_fixed(wire::peek_i32(args_ptr + base))))
+                end
+                if c == "o" is
+                    result.push(arg_object(wire::peek_ptr(args_ptr + base)))
+                end
+                if c == "s" is
+                    let str_ptr: int = wire::peek_ptr(args_ptr + base)
+                    result.push(arg_string(read_cstring(str_ptr)))
+                end
+                slot += 1
+                i += 1
+            end
+        end
+    end
+    return result
+end
+
+fn str_is_digit(c: string) -> bool is
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+           c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+end
+
+;; Czyta C-string o nieznanej długości z góry: skanuje kawałkami po 64
+;; bajty, szukając pierwszego NUL, aż go znajdzie (ograniczone do 4KB —
+;; dłuższe pojedyncze argumenty string w protokołach volcana się nie
+;; zdarzają; gdyby były potrzebne, limit to jedna stała do podniesienia).
+fn read_cstring(addr: int) -> string is
+    let chunk: int = 64
+    let max_total: int = 4096
+    let mut collected: [int] = []
+    let mut offset: int = 0
+    let mut found: bool = false
+    while offset < max_total && !found is
+        let raw: [int] = __builtin_bytes_to_ints(wire::peek_bytes(addr + offset, chunk))
+        let mut j: int = 0
+        while j < chunk && !found is
+            if raw[j] == 0 is
+                found = true
+            else is
+                collected.push(raw[j])
+            end
+            j += 1
+        end
+        offset += chunk
+    end
+    return __builtin_bytes_to_string(__builtin_bytes_from_ints(collected))
+end
