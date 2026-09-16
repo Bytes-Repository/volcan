@@ -1,0 +1,94 @@
+pub fn handle_motion(state: cs::VolcanState, dx: f64, dy: f64, focus_follows_mouse: bool) -> cs::VolcanState is
+    let mut s: cs::VolcanState = state
+    s.pointer_x = s.pointer_x + dx
+    s.pointer_y = s.pointer_y + dy
+    let hit: int = cs::surface_at(s, s.pointer_x, s.pointer_y)
+    if hit != s.pointer_focus is
+        if s.pointer_focus != 0 is
+            send_to_surface_client(s, s.pointer_focus, 1, "ou", [args::arg_uint(0), args::arg_object(s.pointer_focus)])
+        end
+        if hit != 0 is
+            send_to_surface_client(s, hit, 0, "ouff", [args::arg_uint(0), args::arg_object(hit), args::arg_fixed(s.pointer_x), args::arg_fixed(s.pointer_y)])
+            if focus_follows_mouse is
+                s.keyboard_focus = hit
+            end
+        end
+        s.pointer_focus = hit
+    else is
+        if hit != 0 is
+            send_to_surface_client(s, hit, 2, "uff", [args::arg_uint(0), args::arg_fixed(s.pointer_x), args::arg_fixed(s.pointer_y)])
+        end
+    end
+    return s
+end
+
+pub fn handle_button(state: cs::VolcanState, button: int, pressed: bool) -> cs::VolcanState is
+    let mut s: cs::VolcanState = state
+    if pressed && s.pointer_focus != 0 is
+        s.keyboard_focus = s.pointer_focus ;; click-to-focus
+    end
+    if s.pointer_focus != 0 is
+        send_to_surface_client(s, s.pointer_focus, 3, "uuuu", [
+            args::arg_uint(0), args::arg_uint(0), args::arg_uint(button), args::arg_uint(bool_to_int(pressed))
+        ])
+    end
+    return s
+end
+
+;; `mods_serialized`: bitmaska z `xkb_state_serialize_mods` (patrz
+;; backend/keymap.h#) — przekazywana klientowi jako `wl_keyboard.modifiers`
+;; zaraz po `key`, zgodnie z tym, jak prawdziwe kompozytory grupują te
+;; dwa eventy w jedną logiczną zmianę stanu.
+pub fn handle_key(state: cs::VolcanState, keycode: int, pressed: bool, mods_serialized: int) -> cs::VolcanState is
+    if state.keyboard_focus != 0 is
+        send_to_surface_client(state, state.keyboard_focus, 3, "uuuu", [
+            args::arg_uint(0), args::arg_uint(0), args::arg_uint(keycode), args::arg_uint(bool_to_int(pressed))
+        ])
+        send_to_surface_client(state, state.keyboard_focus, 4, "uuuuu", [
+            args::arg_uint(0), args::arg_uint(mods_serialized), args::arg_uint(0), args::arg_uint(0), args::arg_uint(0)
+        ])
+    end
+    return state
+end
+
+;; ── dotyk wieloma palcami: każdy "slot" to osobny palec ───────────────
+pub fn handle_touch(state: cs::VolcanState, slot: int, x: f64, y: f64, is_down: bool) -> cs::VolcanState is
+    let hit: int = cs::surface_at(state, x, y)
+    if hit != 0 is
+        if is_down is
+            send_to_surface_client(state, hit, 0, "uuoiff", [
+                args::arg_uint(0), args::arg_uint(0), args::arg_object(hit),
+                args::arg_int(slot), args::arg_fixed(x), args::arg_fixed(y)
+            ])
+        else is
+            send_to_surface_client(state, hit, 2, "uiff", [
+                args::arg_uint(0), args::arg_int(slot), args::arg_fixed(x), args::arg_fixed(y)
+            ])
+        end
+    end
+    return state
+end
+
+pub fn handle_touch_up(state: cs::VolcanState, slot: int) -> cs::VolcanState is
+    if state.pointer_focus != 0 is
+        send_to_surface_client(state, state.pointer_focus, 1, "uui", [
+            args::arg_uint(0), args::arg_uint(0), args::arg_int(slot)
+        ])
+    end
+    return state
+end
+
+;; ── wysyłka: znajdź fd klienta właściciela powierzchni i wypchnij
+;; ── zakodowaną wiadomość. W tym szkielecie `Surface.client` (ustawiane
+;; ── w dispatcher.h#'s `wl_compositor.create_surface`) trzyma fd
+;; ── właściciela — patrz surface.h#.
+fn send_to_surface_client(s: cs::VolcanState, resource: int, opcode: int, sig: string, values: [args::WireArg]) is
+    let surf = cs::get_surface(s, resource)
+    let msg: bytes = codec::encode_message(resource, opcode, sig, values)
+    send(surf.client, msg, __builtin_bytes_len(msg), 0)
+end
+
+fn bool_to_int(b: bool) -> int is
+    if b is return 1 end
+    return 0
+end
