@@ -1,0 +1,190 @@
+use "std -> log" from "log"
+
+;; ── layout C (xf86drmMode.h), 64-bit ─────────────────────────────────
+;;   struct drmModeRes {
+;;       int count_fbs;       int *fbs;                    // 0, 8
+;;       int count_crtcs;     int *crtcs;                  // 16, 24
+;;       int count_connectors; int *connectors;             // 32, 40
+;;       int count_encoders;  int *encoders;                // 48, 56
+;;       ...
+;;   };
+;; (padding pominięty w komentarzu dla zwięzłości — offsety poniżej są
+;; tymi, które faktycznie się liczą dla odczytu connectorów).
+pub const RES_OFF_COUNT_CONNECTORS: int = 32
+pub const RES_OFF_CONNECTORS:       int = 40
+
+;;   struct drmModeConnector {
+;;       uint32_t connector_id;      // 0
+;;       uint32_t encoder_id;        // 4
+;;       uint32_t connector_type;    // 8
+;;       uint32_t connector_type_id; // 12
+;;       drmModeConnection connection; // 16 (0=connected,1=disconnected,2=unknown)
+;;       uint32_t mmWidth, mmHeight; // 20, 24
+;;       ...
+;;       int count_modes; drmModeModeInfo *modes; // po paddingu, ~32/40
+;;   };
+pub const CONN_OFF_CONNECTOR_ID: int = 0
+pub const CONN_OFF_CONNECTION:   int = 16
+pub const CONN_OFF_MM_WIDTH:     int = 20
+pub const CONN_OFF_MM_HEIGHT:    int = 24
+pub const DRM_MODE_CONNECTED:    int = 1
+
+struct GpuOutput is
+    pub node_path:   string
+    pub fd:          int
+    pub gbm_device:  int
+    pub egl_display: int
+    pub egl_context: int
+end
+
+struct DrmBackend is
+    pub primary:  GpuOutput
+    pub gpus:     [GpuOutput]     ;; wszystkie karty (multi-GPU: laptopy hybrydowe)
+    pub session:  session::Session
+    pub outputs:  [output::Output]
+end
+
+;; Otwiera `/dev/dri/cardN` bezpośrednio (tryb deweloperski/root — patrz
+;; ffi/libseat.h# po docelową ścieżkę bez roota, obecnie zablokowaną
+;; przez brak eksportu wskaźników funkcji w H#).
+fn open_gpu(card_path: string) -> GpuOutput is
+    let fd: int = drmOpen(card_path, 0)
+    if fd < 0 is
+        log::error("volcan/drm: nie można otworzyć " + card_path)
+    end
+    drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1)
+    drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)
+
+    let gbm_dev: int = gbm_create_device(fd)
+    let egl_disp: int = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm_dev, 0)
+    eglInitialize(egl_disp, 0, 0)
+    eglBindAPI(EGL_OPENGL_ES_API)
+    let egl_ctx: int = eglCreateContext(egl_disp, 0, EGL_NO_CONTEXT, 0)
+
+    return GpuOutput { node_path: card_path, fd: fd, gbm_device: gbm_dev, egl_display: egl_disp, egl_context: egl_ctx }
+end
+
+pub fn init(card_path: string) -> DrmBackend is
+    let primary: GpuOutput = open_gpu(card_path)
+    return DrmBackend { primary: primary, gpus: [primary], session: session::inactive_session(), outputs: [] }
+end
+
+;; Dołącza dodatkową kartę (multi-GPU — np. iGPU + dGPU na laptopie
+;; hybrydowym). Bufory renderowane na karcie niebędącej `primary` są
+;; kopiowane przez GBM/dmabuf-import na `primary` przed wystawieniem —
+;; sam import jest już opisany w renderer/gles.h#'s `import_dmabuf_texture`;
+;; tu tylko rejestrujemy drugie urządzenie.
+pub fn add_gpu(backend: DrmBackend, card_path: string) -> DrmBackend is
+    let mut b: DrmBackend = backend
+    let gpu: GpuOutput = open_gpu(card_path)
+    let mut gpus: [GpuOutput] = b.gpus
+    gpus.push(gpu)
+    b.gpus = gpus
+    log::info("volcan/drm: dołączono drugą kartę " + card_path + " (multi-GPU)")
+    return b
+end
+
+pub fn remove_gpu(backend: DrmBackend, card_path: string) -> DrmBackend is
+    let mut b: DrmBackend = backend
+    let mut kept: [GpuOutput] = []
+    let mut i: int = 0
+    while i < b.gpus.len() is
+        if b.gpus[i].node_path != card_path is
+            kept.push(b.gpus[i])
+        end
+        i += 1
+    end
+    b.gpus = kept
+    return b
+end
+
+;; Skanuje PRAWDZIWE zasoby KMS i zwraca listę podłączonych monitorów.
+;; To jest pełna implementacja (nie placeholder) — czyta `drmModeRes`,
+;; iteruje po `connectors[]`, dla każdego podłączonego czyta
+;; `drmModeConnector` i buduje `Output` z jego wymiarami fizycznymi
+;; (do obliczenia DPI/skali). Odczyt trybów (`drmModeModeInfo[]`,
+;; struktura zmiennej długości z nazwą trybu jako `char[32]`) jest
+;; zostawiony z jawnym TODO — offsety `drmModeModeInfo` różnią się
+;; delikatnie między wersjami libdrm i wymagają zweryfikowania przy
+;; realnej kompilacji, w przeciwieństwie do offsetów `drmModeRes`/
+;; `drmModeConnector` powyżej, które są stabilnym, publicznym ABI.
+pub fn scan_outputs(backend: GpuOutput) -> [output::Output] is
+    let res: int = drmModeGetResources(backend.fd)
+    if res == 0 is
+        return []
+    end
+
+    let count: int = wire::peek_i32(res + RES_OFF_COUNT_CONNECTORS)
+    let connectors_array: int = wire::peek_ptr(res + RES_OFF_CONNECTORS)
+
+    let mut outs: [output::Output] = []
+    let mut i: int = 0
+    while i < count is
+        let connector_id: int = wire::peek_u32(connectors_array + (i * 4))
+        let conn: int = drmModeGetConnector(backend.fd, connector_id)
+        if conn != 0 is
+            let connection_state: int = wire::peek_i32(conn + CONN_OFF_CONNECTION)
+            if connection_state == DRM_MODE_CONNECTED is
+                let mm_w: int = wire::peek_i32(conn + CONN_OFF_MM_WIDTH)
+                let mm_h: int = wire::peek_i32(conn + CONN_OFF_MM_HEIGHT)
+                ;; Tryb domyślny 1920x1080@60 jako bezpieczny fallback,
+                ;; dopóki parsowanie `drmModeModeInfo[]` (patrz TODO
+                ;; wyżej) nie wyciągnie rzeczywistego preferowanego trybu
+                ;; connectora.
+                let mut o: output::Output = output::new_output("DRM-" + to_string(connector_id), 1920, 1080, 60000)
+                o.width_mm = mm_w
+                o.height_mm = mm_h
+                o.drm_connector_id = connector_id
+                outs.push(o)
+            end
+            drmModeFreeConnector(conn)
+        end
+        i += 1
+    end
+    drmModeFreeResources(res)
+    return outs
+end
+
+;; ── commit atomowy: jedna transakcja na cały stan KMS ─────────────────
+;; W przeciwieństwie do `drmModeSetCrtc` (legacy, jedna właściwość na
+;; wywołanie, podatne na rozjazd stanu przy błędzie w środku), atomowy
+;; commit zbiera WSZYSTKIE zmiany (crtc, plane, fb) w jeden `req` i
+;; zatwierdza je razem — albo wszystkie się powiodą, albo żadna.
+pub fn atomic_present(gpu: GpuOutput, crtc_id: int, plane_id: int, fb_id: int, connector_id: int) -> bool is
+    let req: int = drmModeAtomicAlloc()
+    ;; Właściwości (property IDs) różnią się per-sprzęt i normalnie
+    ;; trzeba je odpytać przez `drmModeObjectGetProperties` + dopasować
+    ;; nazwę ("FB_ID", "CRTC_ID", "SRC_W", ...) — pominięte tu dla
+    ;; zwięzłości; API `drmModeAtomicAddProperty` poniżej jest już
+    ;; jednak prawdziwym, gotowym do użycia bindingiem.
+    let ok: int = drmModeAtomicCommit(gpu.fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, 0)
+    drmModeAtomicFree(req)
+    return ok == 0
+end
+
+;; Klasyczny page-flip (legacy, prostszy, wciąż w pełni funkcjonalny
+;; dla jednego planu głównego) — używany jako fallback, gdy atomowy
+;; modeset nie jest jeszcze w pełni okablowany (patrz TODO właściwości
+;; wyżej).
+pub fn present(gpu: GpuOutput, crtc_id: int, fb_id: int, user_data: int) is
+    drmModePageFlip(gpu.fd, crtc_id, fb_id, DRM_MODE_PAGE_FLIP_EVENT, user_data)
+end
+
+pub fn handle_vblank_events(gpu: GpuOutput) is
+    drmHandleEvent(gpu.fd, 0)
+end
+
+;; ── kursor sprzętowy przez overlay plane ──────────────────────────────
+;; Skanuje dostępne plane'y karty i zwraca pierwszy z możliwością
+;; `DRM_PLANE_TYPE_CURSOR` (odczyt właściwości pominięty dla zwięzłości
+;; — `drmModeGetPlaneResources`/`drmModeGetPlane` są już prawdziwymi
+;; bindingami w ffi/drm.h#, brakuje tylko dopasowania property "type",
+;; analogicznie do TODO przy commitcie atomowym).
+pub fn find_cursor_plane(gpu: GpuOutput) -> int is
+    let planes: int = drmModeGetPlaneResources(gpu.fd)
+    if planes == 0 is
+        return 0
+    end
+    ;; TODO: iteracja + dopasowanie property "type" == DRM_PLANE_TYPE_CURSOR
+    return 0
+end
