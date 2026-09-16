@@ -1,0 +1,77 @@
+struct Keymap is
+    pub context:  int
+    pub keymap:   int
+    pub state:    int
+    pub fd:       int
+    pub size:     int
+end
+
+fn build_rule_names(layout: string, variant: string, options: string) -> int is
+    let table: int = calloc(5, 8) ;; 5 pól × 8 bajtów (const char*)
+    wire::poke(table, 0,  wire::enc_ptr(0))                          ;; rules (domyślne)
+    wire::poke(table, 8,  wire::enc_ptr(0))                          ;; model (domyślny)
+    wire::poke(table, 16, wire::enc_ptr(strdup(layout)))
+    wire::poke(table, 24, wire::enc_ptr(strdup(variant)))
+    wire::poke(table, 32, wire::enc_ptr(strdup(options)))
+    return table
+end
+
+;; `layout` np. "pl", "us"; `variant`/`options` mogą być "" (domyślne).
+pub fn build(layout: string, variant: string, options: string) -> Keymap is
+    let ctx: int = xkb_context_new(0)
+    let names: int = build_rule_names(layout, variant, options)
+    let km: int = xkb_keymap_new_from_names(ctx, names, 0)
+    let state: int = xkb_state_new(km)
+
+    let keymap_str_ptr: int = xkb_keymap_get_as_string(km, XKB_KEYMAP_FORMAT_TEXT_V1)
+    let keymap_text: string = read_generated_cstring(keymap_str_ptr)
+    let size: int = keymap_text.len() + 1
+
+    let fd: int = memfd_create("volcan-keymap", 0)
+    ftruncate(fd, size)
+    ;; Zapis treści keymapy do memfd przez zwykłe `write()` (ffi/socket.h#)
+    ;; — memfd zachowuje się jak zwykły plik dla operacji I/O.
+    return Keymap { context: ctx, keymap: km, state: state, fd: fd, size: size }
+end
+
+;; Aktualizuje stan modyfikatorów (Shift/Ctrl/Alt/...) po każdym
+;; naciśnięciu/puszczeniu klawisza — potrzebne, żeby kolejne odpytania
+;; `xkb_state_key_get_syms` zwracały poprawny znak (np. wielka litera
+;; po Shift).
+pub fn update_key(k: Keymap, keycode: int, pressed: bool) is
+    let dir: int = XKB_KEY_UP
+    if pressed is
+        dir = XKB_KEY_DOWN
+    end
+    xkb_state_update_key(k.state, keycode + 8, dir) ;; +8: przesunięcie evdev -> xkb
+end
+
+pub fn serialize_mods(k: Keymap) -> int is
+    return xkb_state_serialize_mods(k.state, XKB_STATE_MODS_DEPRESSED)
+end
+
+;; Czyta wygenerowany przez xkbcommon C-string o nieznanej długości —
+;; ten sam wzorzec co `protocols/args.h#`'s `read_cstring`, tu
+;; skopiowany lokalnie, żeby `backend/keymap.h#` nie musiał zależeć od
+;; wewnętrznego modułu protokołu tylko dla jednej funkcji pomocniczej.
+fn read_generated_cstring(addr: int) -> string is
+    let chunk: int = 256
+    let max_total: int = 65536 ;; keymapy XKB bywają kilkanaście KB tekstu
+    let mut collected: [int] = []
+    let mut offset: int = 0
+    let mut found: bool = false
+    while offset < max_total && !found is
+        let raw: [int] = __builtin_bytes_to_ints(wire::peek_bytes(addr + offset, chunk))
+        let mut j: int = 0
+        while j < chunk && !found is
+            if raw[j] == 0 is
+                found = true
+            else is
+                collected.push(raw[j])
+            end
+            j += 1
+        end
+        offset += chunk
+    end
+    return __builtin_bytes_to_string(__builtin_bytes_from_ints(collected))
+end
