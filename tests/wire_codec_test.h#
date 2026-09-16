@@ -1,0 +1,31 @@
+use "std -> test" from "test"
+mod protocols
+
+#[test]
+fn test_encode_decode_roundtrip_uint_args() is
+    let encoded = codec::encode_message(5, 0, "uu", [args::arg_uint(42), args::arg_uint(7)])
+    let raw = __builtin_bytes_to_ints(encoded)
+    let decoded = codec::try_decode(raw, "uu")
+    assert_eq(decoded.arg_values[0].int_val, 42)
+    assert_eq(decoded.arg_values[1].int_val, 7)
+end
+
+#[test]
+fn test_encode_decode_roundtrip_string_arg() is
+    let encoded = codec::encode_message(3, 1, "s", [args::arg_string("volcan")])
+    let raw = __builtin_bytes_to_ints(encoded)
+    let decoded = codec::try_decode(raw, "s")
+    assert_eq(decoded.arg_values[0].str_val, "volcan")
+end
+
+#[test]
+fn test_decode_reports_incomplete_message() is
+    ;; Nagłówek zapowiada więcej bajtów niż faktycznie jest w buforze —
+    ;; try_decode musi zwrócić total_len == 0 (czekaj na więcej danych),
+    ;; a nie próbować czytać poza bufor.
+    let encoded = codec::encode_message(1, 0, "uu", [args::arg_uint(1), args::arg_uint(2)])
+    let raw = __builtin_bytes_to_ints(encoded)
+    let truncated = raw[0..raw.len() - 2]
+    let decoded = codec::try_decode(truncated, "uu")
+    assert_eq(decoded.total_len, 0)
+end
