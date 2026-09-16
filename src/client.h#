@@ -1,0 +1,36 @@
+use "std -> collections" from "col"
+use "std -> conv"        from "conv"
+
+struct Client is
+    pub fd:          int
+    pub objects:      any   ;; string(object_id) -> nazwa interfejsu
+    pub recv_buf:     [int] ;; nieprzetworzone bajty odebrane z gniazda
+    pub next_server_id: int ;; licznik dla obiektów tworzonych PRZEZ serwer (eventy z new_id)
+    pub alive:        bool
+end
+
+pub fn new_client(fd: int) -> Client is
+    let objs: any = col::new_map()
+    col::hashmap_insert(objs, "1", "wl_display")
+    return Client { fd: fd, objects: objs, recv_buf: [], next_server_id: 0xff000000, alive: true }
+end
+
+pub fn interface_of(c: Client, object_id: int) -> string is
+    let key: string = conv::int_to_str(object_id)
+    if !col::hashmap_contains(c.objects, key) is
+        return ""
+    end
+    return col::hashmap_get(c.objects, key)
+end
+
+;; Rejestruje nowo utworzony obiekt (wynik requestu z argumentem
+;; `new_id`, np. wl_compositor.create_surface) pod jego interfejsem.
+pub fn register_object(c: Client, object_id: int, interface_name: string) -> Client is
+    col::hashmap_insert(c.objects, conv::int_to_str(object_id), interface_name)
+    return c
+end
+
+pub fn unregister_object(c: Client, object_id: int) -> Client is
+    col::hashmap_remove(c.objects, conv::int_to_str(object_id))
+    return c
+end
