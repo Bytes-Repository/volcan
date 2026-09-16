@@ -1,1 +1,232 @@
+use "std -> log"         from "log"
 
+;; Wołane, gdy `poll()` (patrz volcan.h#) zgłosi dane gotowe do odczytu
+;; na gnieździe danego klienta. Czyta tyle, ile jest dostępne, dokleja
+;; do `recv_buf`, i wyciąga z niego wszystkie kompletne wiadomości,
+;; jedna po drugiej (mogło ich przyjść kilka naraz).
+pub fn on_readable(state: cs::VolcanState, c: client::Client) -> (cs::VolcanState, client::Client) is
+    let chunk_size: int = 4096
+    let raw: bytes = zero_bytes(chunk_size)
+    let n: int = recv(c.fd, raw, chunk_size, 0)
+
+    if n <= 0 is
+        ;; 0 = klient zamknął połączenie; <0 = błąd gniazda. Obie
+        ;; sytuacje kończą się tak samo: odepnij klienta.
+        let mut dead: client::Client = c
+        dead.alive = false
+        return (state, dead)
+    end
+
+    let incoming: [int] = __builtin_bytes_to_ints(raw)
+    let mut buf: [int] = c.recv_buf
+    let mut i: int = 0
+    while i < n is
+        buf.push(incoming[i])
+        i += 1
+    end
+
+    let mut s: cs::VolcanState = state
+    let mut cl: client::Client = c
+    let mut keep_going: bool = true
+    while keep_going is
+        if buf.len() < 8 is
+            keep_going = false
+        else is
+            let object_id: int = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24)
+            let interface_name: string = client::interface_of(cl, object_id)
+            if interface_name == "" is
+                ;; Klient wysłał request na nieznany/usunięty obiekt —
+                ;; zgodnie z protokołem powinniśmy zerwać połączenie
+                ;; (protocol error); tu: po prostu przestań przetwarzać
+                ;; ten bufor.
+                log::error("volcan/dispatch: request na nieznany obiekt " + conv_int_to_str(object_id))
+                keep_going = false
+            else is
+                let size_and_opcode: int = buf[4] | (buf[5] << 8) | (buf[6] << 16) | (buf[7] << 24)
+                let opcode: int = size_and_opcode & 65535
+                let sig: string = lookup::request_signature(interface_name, opcode)
+                let decoded: codec::DecodedMessage = codec::try_decode(buf, sig)
+
+                if decoded.total_len == 0 is
+                    keep_going = false ;; niekompletna wiadomość — czekaj na więcej danych
+                else is
+                    let result = handle_request(s, cl, interface_name, object_id, opcode, decoded.arg_values)
+                    s = result.0
+                    cl = result.1
+                    buf = drop_front(buf, decoded.total_len)
+                end
+            end
+        end
+    end
+    cl.recv_buf = buf
+    return (s, cl)
+end
+
+;; ── routing: (interfejs, opcode) -> logika kompozytora ────────────────
+;; Prosty łańcuch `if` zamiast tablicy funkcji — H#'s wbudowana mapa
+;; (`col::hashmap`) przechowuje tylko wartości typu `string`, więc nie
+;; da się w niej trzymać domknięć jako "dispatch table"; jawny łańcuch
+;; jest równie czytelny przy tej skali protokołów i nie wymaga żadnych
+;; sztuczek.
+fn handle_request(state: cs::VolcanState, c: client::Client, iface: string, object_id: int, opcode: int, a: [args::WireArg]) -> (cs::VolcanState, client::Client) is
+    let mut s: cs::VolcanState = state
+    let mut cl: client::Client = c
+
+    if iface == "wl_display" is
+        if opcode == 0 is ;; sync -> wl_callback.done
+            let cb_id: int = a[0].int_val
+            cl = client::register_object(cl, cb_id, "wl_callback")
+            send_event(cl, cb_id, 0, "u", [args::arg_uint(0)])
+        end
+        if opcode == 1 is ;; get_registry
+            let reg_id: int = a[0].int_val
+            cl = client::register_object(cl, reg_id, "wl_registry")
+            send_globals(cl, reg_id)
+        end
+    end
+
+    if iface == "wl_registry" is
+        if opcode == 0 is ;; bind(name, interface, version, new_id)
+            ;; Sygnatura "usun" -> a[0]=name(uint) a[1]=interface(string)
+            ;; a[2]=version(uint) a[3]=new_id -- w praktyce trzeba by
+            ;; sparsować dynamiczny typ z argumentu string; uproszczone
+            ;; tu do zarejestrowania obiektu pod interfejsem podanym
+            ;; jawnie przez klienta.
+            let new_id: int = a[a.len() - 1].int_val
+            let requested_iface: string = a[1].str_val
+            cl = client::register_object(cl, new_id, requested_iface)
+        end
+    end
+
+    if iface == "wl_compositor" is
+        if opcode == 0 is ;; create_surface -> new_id wl_surface
+            let surf_id: int = a[0].int_val
+            cl = client::register_object(cl, surf_id, "wl_surface")
+            let new_surf: surface::Surface = surface::new_surface(surf_id, c.fd)
+            s = cs::put_surface(s, surf_id, new_surf)
+        end
+        if opcode == 1 is ;; create_region -> new_id wl_region
+            cl = client::register_object(cl, a[0].int_val, "wl_region")
+        end
+    end
+
+    if iface == "wl_surface" is
+        if opcode == 1 is ;; attach(buffer, x, y)
+            let surf: surface::Surface = cs::get_surface(s, object_id)
+            s = cs::put_surface(s, object_id, surface::attach(surf, a[0].int_val))
+        end
+        if opcode == 2 || opcode == 9 is ;; damage / damage_buffer
+            let surf2: surface::Surface = cs::get_surface(s, object_id)
+            s = cs::put_surface(s, object_id, surface::damage(surf2, a[0].int_val, a[1].int_val, a[2].int_val, a[3].int_val))
+        end
+        if opcode == 6 is ;; commit
+            let surf3: surface::Surface = cs::get_surface(s, object_id)
+            let committed: surface::Surface = surface::commit(surf3)
+            s = cs::put_surface(s, object_id, committed)
+            if committed.is_mapped is
+                s = cs::raise_surface(s, object_id)
+            end
+        end
+    end
+
+    if iface == "wl_shm" is
+        if opcode == 0 is ;; create_pool -> new_id wl_shm_pool
+            cl = client::register_object(cl, a[0].int_val, "wl_shm_pool")
+        end
+    end
+
+    if iface == "wl_shm_pool" is
+        if opcode == 0 is ;; create_buffer -> new_id wl_buffer
+            cl = client::register_object(cl, a[0].int_val, "wl_buffer")
+        end
+    end
+
+    if iface == "wl_seat" is
+        if opcode == 0 is ;; get_pointer
+            cl = client::register_object(cl, a[0].int_val, "wl_pointer")
+        end
+        if opcode == 1 is ;; get_keyboard
+            cl = client::register_object(cl, a[0].int_val, "wl_keyboard")
+        end
+        if opcode == 2 is ;; get_touch
+            cl = client::register_object(cl, a[0].int_val, "wl_touch")
+        end
+    end
+
+    if iface == "xdg_wm_base" is
+        if opcode == 2 is ;; get_xdg_surface(new_id, wl_surface)
+            cl = client::register_object(cl, a[0].int_val, "xdg_surface")
+        end
+    end
+
+    if iface == "xdg_surface" is
+        if opcode == 1 is ;; get_toplevel -> new_id xdg_toplevel
+            let top_id: int = a[0].int_val
+            cl = client::register_object(cl, top_id, "xdg_toplevel")
+            ;; Pierwszy `configure` — zgodnie z protokołem klient MUSI
+            ;; dostać go zanim cokolwiek narysuje.
+            let serial_result = cs::next_serial(s)
+            s = serial_result.0
+            send_event(cl, object_id, 0, "u", [args::arg_uint(serial_result.1)])
+        end
+        if opcode == 4 is ;; ack_configure(serial)
+            ;; Potwierdzenie klienta — w pełnej implementacji porównaj
+            ;; serial z ostatnio wysłanym i dopiero wtedy pozwól na
+            ;; zastosowanie stanu z kolejnego `wl_surface.commit`.
+        end
+    end
+
+    if iface == "xdg_toplevel" is
+        ;; set_title(3)/set_app_id(4) — do zapisania w modelu okna,
+        ;; gdy dojdzie tytuł paska okna w renderze (poza zakresem tego
+        ;; szkieletu renderującego).
+    end
+
+    return (s, cl)
+end
+
+;; Wysyła `wl_registry.global` dla każdego wbudowanego globala — to
+;; jest to, co normalnie klient dostaje zaraz po `get_registry`.
+fn send_globals(c: client::Client, registry_id: int) is
+    send_event(c, registry_id, 0, "usu", [args::arg_uint(1), args::arg_string("wl_compositor"), args::arg_uint(6)])
+    send_event(c, registry_id, 0, "usu", [args::arg_uint(2), args::arg_string("wl_shm"), args::arg_uint(2)])
+    send_event(c, registry_id, 0, "usu", [args::arg_uint(3), args::arg_string("wl_seat"), args::arg_uint(9)])
+    send_event(c, registry_id, 0, "usu", [args::arg_uint(4), args::arg_string("wl_output"), args::arg_uint(4)])
+    send_event(c, registry_id, 0, "usu", [args::arg_uint(5), args::arg_string("xdg_wm_base"), args::arg_uint(6)])
+    send_event(c, registry_id, 0, "usu", [args::arg_uint(6), args::arg_string("zwlr_layer_shell_v1"), args::arg_uint(5)])
+end
+
+;; Koduje i wysyła jeden event na gniazdo klienta — odpowiednik
+;; `wl_resource_post_event_array`, tylko pisany bezpośrednio na fd.
+fn send_event(c: client::Client, object_id: int, opcode: int, signature: string, values: [args::WireArg]) is
+    let msg: bytes = codec::encode_message(object_id, opcode, signature, values)
+    send(c.fd, msg, __builtin_bytes_len(msg), 0)
+end
+
+;; (licznik serial przeniesiony do `cs::VolcanState.next_serial` —
+;; patrz `cs::next_serial` — bo H# nie ma mutowalnych zmiennych na
+;; poziomie modułu, tylko `const`/immutable `let` poza funkcjami)
+
+fn drop_front(buf: [int], n: int) -> [int] is
+    let mut out: [int] = []
+    let mut i: int = n
+    while i < buf.len() is
+        out.push(buf[i])
+        i += 1
+    end
+    return out
+end
+
+fn zero_bytes(n: int) -> bytes is
+    let mut ints: [int] = []
+    let mut i: int = 0
+    while i < n is
+        ints.push(0)
+        i += 1
+    end
+    return __builtin_bytes_from_ints(ints)
+end
+
+fn conv_int_to_str(n: int) -> string is
+    return to_string(n)
+end
