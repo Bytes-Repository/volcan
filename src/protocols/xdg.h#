@@ -1,0 +1,126 @@
+pub fn xdg_wm_base_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "xdg_wm_base", version: 6,
+        requests: [
+            wire::wire_msg("destroy",          ""),
+            wire::wire_msg_typed("create_positioner","n", ["xdg_positioner"]),
+            wire::wire_msg_typed("get_xdg_surface",  "no", ["xdg_surface", "wl_surface"]),
+            wire::wire_msg("pong",             "u"),
+        ],
+        events: [ wire::wire_msg("ping", "u") ],
+    }
+end
+
+pub fn xdg_positioner_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "xdg_positioner", version: 6,
+        requests: [
+            wire::wire_msg("destroy",              ""),
+            wire::wire_msg("set_size",              "ii"),
+            wire::wire_msg("set_anchor_rect",       "iiii"),
+            wire::wire_msg("set_anchor",            "u"),
+            wire::wire_msg("set_gravity",           "u"),
+            wire::wire_msg("set_constraint_adjustment", "u"),
+            wire::wire_msg("set_offset",            "ii"),
+            wire::wire_msg("set_reactive",          "3"),
+            wire::wire_msg("set_parent_size",       "3ii"),
+            wire::wire_msg("set_parent_configure",  "3u"),
+        ],
+        events: [],
+    }
+end
+
+pub fn xdg_surface_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "xdg_surface", version: 6,
+        requests: [
+            wire::wire_msg("destroy",       ""),
+            wire::wire_msg_typed("get_toplevel",  "n", ["xdg_toplevel"]),
+            wire::wire_msg_typed("get_popup",     "n?oo", ["xdg_popup", "xdg_surface", "xdg_positioner"]),
+            wire::wire_msg("set_window_geometry", "iiii"),
+            wire::wire_msg("ack_configure", "u"),
+        ],
+        events: [ wire::wire_msg("configure", "u") ],
+    }
+end
+
+pub fn xdg_toplevel_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "xdg_toplevel", version: 6,
+        requests: [
+            wire::wire_msg("destroy",           ""),
+            wire::wire_msg_typed("set_parent",  "?o", ["xdg_toplevel"]),
+            wire::wire_msg("set_title",         "s"),
+            wire::wire_msg("set_app_id",        "s"),
+            wire::wire_msg_typed("show_window_menu",  "ouii", ["wl_seat"]),
+            wire::wire_msg_typed("move",              "ou", ["wl_seat"]),
+            wire::wire_msg_typed("resize",            "ouu", ["wl_seat"]),
+            wire::wire_msg("set_max_size",      "ii"),
+            wire::wire_msg("set_min_size",      "ii"),
+            wire::wire_msg("set_maximized",     ""),
+            wire::wire_msg("unset_maximized",   ""),
+            wire::wire_msg_typed("set_fullscreen",    "?o", ["wl_output"]),
+            wire::wire_msg("unset_fullscreen",  ""),
+            wire::wire_msg("set_minimized",     ""),
+        ],
+        events: [
+            wire::wire_msg("configure",       "iia"),
+            wire::wire_msg("close",           ""),
+            wire::wire_msg("configure_bounds","4ii"),
+            wire::wire_msg("wm_capabilities", "5a"),
+        ],
+    }
+end
+
+pub fn xdg_popup_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "xdg_popup", version: 6,
+        requests: [
+            wire::wire_msg("destroy",   ""),
+            wire::wire_msg_typed("grab", "ou", ["wl_seat"]),
+            wire::wire_msg("reposition","3ou"),
+        ],
+        events: [
+            wire::wire_msg("configure",     "iiii"),
+            wire::wire_msg("popup_done",    ""),
+            wire::wire_msg("repositioned",  "3u"),
+        ],
+    }
+end
+
+;; xdg-decoration (server-side vs client-side dekoracje okien) — mały,
+;; ale krytyczny protokół dla kompozytorów rysujących własne paski tytułu.
+pub fn xdg_decoration_manager_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "zxdg_decoration_manager_v1", version: 1,
+        requests: [
+            wire::wire_msg("destroy",             ""),
+            wire::wire_msg_typed("get_toplevel_decoration", "no", ["zxdg_toplevel_decoration_v1", "xdg_toplevel"]),
+        ],
+        events: [],
+    }
+end
+
+pub fn xdg_toplevel_decoration_interface() -> wire::WireInterface is
+    return wire::WireInterface {
+        name: "zxdg_toplevel_decoration_v1", version: 1,
+        requests: [
+            wire::wire_msg("destroy",     ""),
+            wire::wire_msg("set_mode",    "u"),
+            wire::wire_msg("unset_mode",  ""),
+        ],
+        events: [ wire::wire_msg("configure", "u") ],
+    }
+end
+
+;; Pełny zestaw xdg-shell — te interfejsy odwołują się do siebie
+;; nawzajem w obie strony (xdg_surface <-> xdg_toplevel/xdg_popup),
+;; więc MUSZĄ być budowane przez `wire::build_protocol_set` (dwa
+;; przebiegi), a nie pojedynczo przez `interface_ptr`.
+pub fn all_xdg_interfaces() -> [wire::WireInterface] is
+    return [
+        xdg_wm_base_interface(), xdg_positioner_interface(),
+        xdg_surface_interface(), xdg_toplevel_interface(), xdg_popup_interface(),
+        xdg_decoration_manager_interface(), xdg_toplevel_decoration_interface(),
+    ]
+end
